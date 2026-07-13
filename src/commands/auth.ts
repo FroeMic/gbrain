@@ -340,6 +340,7 @@ async function revokeClient(clientId: string) {
  * accumulate into arrays. Unknown flags throw a usage error.
  */
 interface RegisterClientArgs {
+  clientKind: 'external' | 'internal_service';
   grantTypes: string[];
   scopes: string;
   sourceId: string;
@@ -350,6 +351,7 @@ interface RegisterClientArgs {
 
 export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
   const out: RegisterClientArgs = {
+    clientKind: 'external',
     grantTypes: ['client_credentials'],
     scopes: 'read',
     sourceId: 'default',
@@ -378,6 +380,14 @@ export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
       }
       case '--scopes': out.scopes = requireValue(); i += 2; break;
       case '--source': out.sourceId = requireValue(); i += 2; break;
+      case '--client-kind': {
+        const clientKind = requireValue();
+        if (clientKind !== 'external' && clientKind !== 'internal_service') {
+          throw new Error(`Invalid client kind: ${clientKind}`);
+        }
+        out.clientKind = clientKind;
+        i += 2; break;
+      }
       case '--federated-read': {
         const v = requireValue();
         out.federatedRead = v.split(',').map(s => s.trim()).filter(Boolean);
@@ -416,7 +426,7 @@ async function registerClient(name: string, args: string[]) {
     console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S] [--source SOURCE] [--federated-read SRC1,SRC2,...] [--redirect-uri URI ...] [--token-endpoint-auth-method client_secret_post|client_secret_basic|none]');
     process.exit(1);
   }
-  const { grantTypes, scopes, sourceId, federatedRead, redirectUris, tokenEndpointAuthMethod } = parsed;
+  const { clientKind, grantTypes, scopes, sourceId, federatedRead, redirectUris, tokenEndpointAuthMethod } = parsed;
 
   try {
     await withConfiguredSql(async (sql) => {
@@ -424,6 +434,7 @@ async function registerClient(name: string, args: string[]) {
       const provider = new GBrainOAuthProvider({ sql });
       const { clientId, clientSecret } = await provider.registerClientManual(
         name, grantTypes, scopes, redirectUris, sourceId, federatedRead, tokenEndpointAuthMethod,
+        clientKind,
       );
       const effectiveFederated = federatedRead && federatedRead.length > 0 ? federatedRead : [sourceId];
       const effectiveAuthMethod = tokenEndpointAuthMethod || 'client_secret_post';
@@ -436,6 +447,7 @@ async function registerClient(name: string, args: string[]) {
       }
       console.log(`  Grant types:         ${grantTypes.join(', ')}`);
       console.log(`  Scopes:              ${scopes}`);
+      console.log(`  Client kind:         ${clientKind}`);
       console.log(`  Token auth method:   ${effectiveAuthMethod}`);
       if (redirectUris.length > 0) {
         console.log(`  Redirect URIs:       ${redirectUris.join(', ')}`);

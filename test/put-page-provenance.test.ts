@@ -160,6 +160,28 @@ describe('put_page provenance — trusted local caller (ctx.remote === false)', 
 });
 
 describe('put_page provenance — CV6 spoofing guard (ctx.remote !== false)', () => {
+  test('authenticated internal-service caller receives Monodrive HTTP provenance', async () => {
+    const ctx = makeCtx({
+      remote: true,
+      auth: {
+        clientId: 'gbrain_cl_monodrive',
+        clientKind: 'internal_service',
+        scopes: ['read', 'write'],
+        token: '[test-token]',
+      },
+    });
+    await putPageOp.handler(ctx, {
+      slug: 'wiki/internal-service-write',
+      content: '---\ntype: note\ntitle: Internal Service\n---\n\nbody',
+      source_kind: 'capture-cli',
+      ingested_via: 'file-watcher',
+    });
+    const prov = await readProvenance('wiki/internal-service-write');
+    expect(prov.source_kind).toBe('monodrive');
+    expect(prov.source_uri).toBeNull();
+    expect(prov.ingested_via).toBe('monodrive:http');
+  });
+
   test('remote caller cannot claim source_kind: capture-cli', async () => {
     const ctx = makeCtx({ remote: true });
     await putPageOp.handler(ctx, {

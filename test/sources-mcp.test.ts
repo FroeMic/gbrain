@@ -84,6 +84,7 @@ function ctxRemote(scopes: string[]): OperationContext {
   const auth: AuthInfo = {
     token: 'gbrain_at_xxx',
     clientId: 'gbrain_cl_test',
+    clientKind: 'external',
     clientName: 'test-client',
     scopes,
     expiresAt: Math.floor(Date.now() / 1000) + 3600,

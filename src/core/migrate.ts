@@ -5505,6 +5505,20 @@ export const MIGRATIONS: Migration[] = [
         WHERE dimension IS NOT NULL;
     `,
   },
+  {
+    version: 123,
+    name: 'oauth_clients_internal_service_kind',
+    idempotent: true,
+    sql: `
+      ALTER TABLE oauth_clients
+        ADD COLUMN IF NOT EXISTS client_kind TEXT NOT NULL DEFAULT 'external';
+      ALTER TABLE oauth_clients
+        DROP CONSTRAINT IF EXISTS oauth_clients_client_kind_check;
+      ALTER TABLE oauth_clients
+        ADD CONSTRAINT oauth_clients_client_kind_check
+        CHECK (client_kind IN ('external', 'internal_service'));
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

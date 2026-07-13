@@ -59,6 +59,7 @@ describe('whoami op contract', () => {
     const auth: AuthInfo = {
       token: 'gbrain_at_xxx',
       clientId: 'gbrain_cl_abc',
+      clientKind: 'external',
       clientName: 'gstack-test',
       scopes: ['read', 'sources_admin'],
       expiresAt: 1234567890,
@@ -78,6 +79,7 @@ describe('whoami op contract', () => {
     const auth: AuthInfo = {
       token: 'legacy-token',
       clientId: 'my-personal-token',
+      clientKind: 'external',
       clientName: 'my-personal-token',
       scopes: ['read', 'write', 'admin'],
       // Legacy tokens have a synthetic 1y expiry — whoami exposes null

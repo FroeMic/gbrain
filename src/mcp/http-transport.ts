@@ -215,6 +215,7 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
       const auth: AuthInfo = {
         token,
         clientId: rowId,
+        clientKind: 'external',
         clientName: rowName,
         scopes: [],
         sourceId,

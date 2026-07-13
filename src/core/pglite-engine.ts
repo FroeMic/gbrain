@@ -467,6 +467,8 @@ export class PGLiteEngine implements BrainEngine {
                 WHERE table_schema='public' AND table_name='oauth_clients' AND column_name='source_id') AS oauth_clients_source_id_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema='public' AND table_name='oauth_clients' AND column_name='federated_read') AS oauth_clients_federated_read_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='oauth_clients' AND column_name='client_kind') AS oauth_clients_client_kind_exists,
         EXISTS (SELECT 1 FROM information_schema.tables
                 WHERE table_schema='public' AND table_name='sources') AS sources_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
@@ -525,6 +527,7 @@ export class PGLiteEngine implements BrainEngine {
       oauth_clients_exists: boolean;
       oauth_clients_source_id_exists: boolean;
       oauth_clients_federated_read_exists: boolean;
+      oauth_clients_client_kind_exists: boolean;
       sources_exists: boolean;
       sources_archived_exists: boolean;
       sources_archived_at_exists: boolean;
@@ -572,7 +575,9 @@ export class PGLiteEngine implements BrainEngine {
     // FK to sources(id) + GIN index idx_oauth_clients_federated_read in
     // PGLITE_SCHEMA_SQL crash without them.
     const needsOauthClientsBootstrap = probe.oauth_clients_exists
-      && (!probe.oauth_clients_source_id_exists || !probe.oauth_clients_federated_read_exists);
+      && (!probe.oauth_clients_source_id_exists
+          || !probe.oauth_clients_federated_read_exists
+          || !probe.oauth_clients_client_kind_exists);
     // v0.26.5 (v34): sources.archived + archived_at + archive_expires_at added
     // for soft-delete lifecycle. Not directly referenced by indexes BUT
     // PGLITE_SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS sources` is a no-op on
@@ -789,6 +794,8 @@ export class PGLiteEngine implements BrainEngine {
           DEFAULT 'default' REFERENCES sources(id) ON DELETE SET NULL;
         ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS federated_read TEXT[]
           NOT NULL DEFAULT '{}';
+        ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS client_kind TEXT
+          NOT NULL DEFAULT 'external';
       `);
     }
 

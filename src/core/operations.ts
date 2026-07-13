@@ -231,6 +231,8 @@ export interface Logger {
 export interface AuthInfo {
   token: string;
   clientId: string;
+  /** Durable OAuth client classification. Identity metadata only; never grants scope. */
+  clientKind: 'external' | 'internal_service';
   /**
    * Human-readable agent name resolved at token-verification time.
    * For OAuth clients this is `oauth_clients.client_name`; for legacy
@@ -762,6 +764,12 @@ const put_page: Operation = {
       provenanceKind = (p.source_kind as string | undefined) ?? null;
       provenanceUri = (p.source_uri as string | undefined) ?? null;
       provenanceVia = (p.ingested_via as string | undefined) ?? null;
+    } else if (ctx.auth?.clientKind === 'internal_service') {
+      // Authenticated Monodrive service callers remain remote and retain every
+      // remote safety restriction. Only the server-controlled audit stamp differs.
+      provenanceKind = 'monodrive';
+      provenanceUri = null;
+      provenanceVia = 'monodrive:http';
     } else {
       // Remote caller or unset trust: server stamps. Mirrors the existing
       // write-through stamping at the file-side (~:637).

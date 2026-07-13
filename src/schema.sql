@@ -643,6 +643,8 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
   client_id               TEXT PRIMARY KEY,
   client_secret_hash      TEXT,
   client_name             TEXT NOT NULL,
+  client_kind             TEXT NOT NULL DEFAULT 'external'
+                            CHECK (client_kind IN ('external', 'internal_service')),
   redirect_uris           TEXT[],
   grant_types             TEXT[] DEFAULT '{"client_credentials"}',
   scope                   TEXT,

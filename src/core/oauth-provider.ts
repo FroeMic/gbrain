@@ -596,7 +596,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     try {
       oauthRows = await this.sql`
         SELECT t.client_id, t.scopes, t.expires_at, t.resource, c.client_name,
-               c.source_id, c.federated_read
+               c.source_id, c.federated_read, c.client_kind
         FROM oauth_tokens t
         LEFT JOIN oauth_clients c ON c.client_id = t.client_id
         WHERE t.token_hash = ${tokenHash} AND t.token_type = 'access'
@@ -607,7 +607,9 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       // projection so auth keeps working until the operator runs
       // apply-migrations. Probe both column names so partial-upgrade brains
       // (v60 applied but v61 didn't yet) also fall through cleanly.
-      if (isUndefinedColumnError(err, 'source_id') || isUndefinedColumnError(err, 'federated_read')) {
+      if (isUndefinedColumnError(err, 'source_id')
+          || isUndefinedColumnError(err, 'federated_read')
+          || isUndefinedColumnError(err, 'client_kind')) {
         // Try the v60-only projection first (source_id but no federated_read).
         try {
           oauthRows = await this.sql`
@@ -656,6 +658,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         token,
         clientId: row.client_id as string,
         clientName: (row.client_name as string | null) ?? undefined,
+        clientKind: row.client_kind === 'internal_service' ? 'internal_service' : 'external',
         scopes: (row.scopes as string[]) || [],
         expiresAt,
         resource: row.resource ? new URL(row.resource as string) : undefined,
@@ -885,6 +888,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     sourceId: string = 'default',
     federatedRead?: string[],
     tokenEndpointAuthMethod?: string,
+    clientKind: 'external' | 'internal_service' = 'external',
   ): Promise<{ clientId: string; clientSecret?: string }> {
     // v0.28: ALLOWED_SCOPES allowlist. Reject `--scopes "read flying-unicorn"`
     // at registration so meaningless scope strings can't pile up in the DB.
@@ -921,10 +925,10 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         INSERT INTO oauth_clients (client_id, client_secret_hash, client_name, redirect_uris,
                                     grant_types, scope, token_endpoint_auth_method,
                                     client_id_issued_at,
-                                    source_id, federated_read)
+                                    source_id, federated_read, client_kind)
         VALUES (${clientId}, ${secretHash}, ${name},
                 ${pgArray(redirectUris)}, ${pgArray(grantTypes)}, ${scopes}, ${authMethod}, ${now},
-                ${sourceId}, ${pgArray(federated)})
+                ${sourceId}, ${pgArray(federated)}, ${clientKind})
       `;
     } catch (err) {
       // Pre-v60 / pre-v61 brain: column missing. Fall back through both

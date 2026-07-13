@@ -198,6 +198,38 @@ describe('client credentials', () => {
 // ---------------------------------------------------------------------------
 
 describe('verifyAccessToken', () => {
+  test('threads durable internal-service client classification into AuthInfo', async () => {
+    const { clientId, clientSecret } = await provider.registerClientManual(
+      'monodrive-internal', ['client_credentials'], 'read write', [], 'default', undefined,
+      undefined, 'internal_service',
+    );
+    const tokens = await provider.exchangeClientCredentials(clientId, clientSecret!, 'read write');
+    const authInfo = await provider.verifyAccessToken(tokens.access_token) as CoreAuthInfo;
+
+    expect(authInfo.clientKind).toBe('internal_service');
+    const rows = await sql`SELECT client_kind FROM oauth_clients WHERE client_id = ${clientId}`;
+    expect(rows[0].client_kind).toBe('internal_service');
+  });
+
+  test('manual default and DCR clients remain external', async () => {
+    const { clientId, clientSecret } = await provider.registerClientManual(
+      'ordinary-external', ['client_credentials'], 'read',
+    );
+    const tokens = await provider.exchangeClientCredentials(clientId, clientSecret!, 'read');
+    const authInfo = await provider.verifyAccessToken(tokens.access_token) as CoreAuthInfo;
+    expect(authInfo.clientKind).toBe('external');
+
+    const registered = await provider.clientsStore.registerClient!({
+      client_name: 'dcr-external',
+      grant_types: ['authorization_code'],
+      redirect_uris: ['https://example.test/callback'],
+      scope: 'read',
+      token_endpoint_auth_method: 'none',
+    });
+    const rows = await sql`SELECT client_kind FROM oauth_clients WHERE client_id = ${registered.client_id}`;
+    expect(rows[0].client_kind).toBe('external');
+  });
+
   test('valid token returns auth info', async () => {
     const { clientId, clientSecret } = await provider.registerClientManual(
       'verify-test', ['client_credentials'], 'read write',

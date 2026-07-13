@@ -22,6 +22,7 @@ describe('parseRegisterClientArgs', () => {
     expect(out.federatedRead).toBeUndefined();
     expect(out.redirectUris).toEqual([]);
     expect(out.tokenEndpointAuthMethod).toBeUndefined();
+    expect(out.clientKind).toBe('external');
   });
 
   test('--grant-types comma-separated → array', () => {
@@ -37,6 +38,15 @@ describe('parseRegisterClientArgs', () => {
   test('--source scopes the OAuth client', () => {
     const out = parseRegisterClientArgs(['--source', 'dept-x']);
     expect(out.sourceId).toBe('dept-x');
+  });
+
+  test('--client-kind internal_service is available only on local registration', () => {
+    const out = parseRegisterClientArgs(['--client-kind', 'internal_service']);
+    expect(out.clientKind).toBe('internal_service');
+  });
+
+  test('--client-kind rejects values outside the closed classification', () => {
+    expect(() => parseRegisterClientArgs(['--client-kind', 'trusted'])).toThrow(/client kind/i);
   });
 
   test('--federated-read comma-separated → array', () => {

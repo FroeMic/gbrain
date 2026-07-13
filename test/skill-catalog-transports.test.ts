@@ -62,7 +62,7 @@ async function call(
 describe('list_skills over dispatch', () => {
   test('HTTP-remote + gate OFF → permission_denied', async () => {
     await withEnv({ GBRAIN_HOME: home }, async () => {
-      const r = await call('list_skills', {}, { remote: true, auth: { token: 't', clientId: 'c', scopes: ['read'] } });
+      const r = await call('list_skills', {}, { remote: true, auth: { token: 't', clientId: 'c', clientKind: 'external', scopes: ['read'] } });
       expect(r.isError).toBe(true);
       expect(r.body.error).toBe('permission_denied');
     });
@@ -80,7 +80,7 @@ describe('list_skills over dispatch', () => {
   test('HTTP-remote + gate ON → catalog with scope-aware D7 split', async () => {
     await withEnv({ GBRAIN_HOME: home }, async () => {
       await engine.setConfig('mcp.publish_skills', 'true');
-      const r = await call('list_skills', {}, { remote: true, auth: { token: 't', clientId: 'c', scopes: ['read'] } });
+      const r = await call('list_skills', {}, { remote: true, auth: { token: 't', clientId: 'c', clientKind: 'external', scopes: ['read'] } });
       expect(r.isError).toBe(false);
       const bo = r.body.skills.find((s: any) => s.name === 'brain-ops');
       expect(bo.usable_tools.sort()).toEqual(['query', 'search']);
@@ -92,7 +92,7 @@ describe('list_skills over dispatch', () => {
   test('admin scope widens usable_tools', async () => {
     await withEnv({ GBRAIN_HOME: home }, async () => {
       await engine.setConfig('mcp.publish_skills', 'true');
-      const r = await call('list_skills', {}, { remote: true, auth: { token: 't', clientId: 'c', scopes: ['admin'] } });
+      const r = await call('list_skills', {}, { remote: true, auth: { token: 't', clientId: 'c', clientKind: 'external', scopes: ['admin'] } });
       const bo = r.body.skills.find((s: any) => s.name === 'brain-ops');
       expect(bo.usable_tools).toContain('put_page');
     });
@@ -101,7 +101,7 @@ describe('list_skills over dispatch', () => {
   test('DB-plane disable wins (gbrain config set mcp.publish_skills false)', async () => {
     await withEnv({ GBRAIN_HOME: home }, async () => {
       await engine.setConfig('mcp.publish_skills', 'false');
-      const r = await call('list_skills', {}, { remote: true, auth: { token: 't', clientId: 'c', scopes: ['read'] } });
+      const r = await call('list_skills', {}, { remote: true, auth: { token: 't', clientId: 'c', clientKind: 'external', scopes: ['read'] } });
       expect(r.isError).toBe(true);
       expect(r.body.error).toBe('permission_denied');
     });
@@ -112,7 +112,7 @@ describe('get_skill over dispatch', () => {
   test('remote + ON returns prose body, frontmatter allowlisted (no writes_to/sources)', async () => {
     await withEnv({ GBRAIN_HOME: home }, async () => {
       await engine.setConfig('mcp.publish_skills', 'true');
-      const r = await call('get_skill', { name: 'brain-ops' }, { remote: true, auth: { token: 't', clientId: 'c', scopes: ['read'] } });
+      const r = await call('get_skill', { name: 'brain-ops' }, { remote: true, auth: { token: 't', clientId: 'c', clientKind: 'external', scopes: ['read'] } });
       expect(r.isError).toBe(false);
       expect(r.body.body).toContain('Brain-first lookup');
       const blob = JSON.stringify(r.body);
@@ -124,7 +124,7 @@ describe('get_skill over dispatch', () => {
 
   test('remote + OFF → permission_denied (gate before fetch)', async () => {
     await withEnv({ GBRAIN_HOME: home }, async () => {
-      const r = await call('get_skill', { name: 'brain-ops' }, { remote: true, auth: { token: 't', clientId: 'c', scopes: ['read'] } });
+      const r = await call('get_skill', { name: 'brain-ops' }, { remote: true, auth: { token: 't', clientId: 'c', clientKind: 'external', scopes: ['read'] } });
       expect(r.isError).toBe(true);
       expect(r.body.error).toBe('permission_denied');
     });
