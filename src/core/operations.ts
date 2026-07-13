@@ -2185,7 +2185,7 @@ const get_timeline: Operation = {
   cliHints: { name: 'timeline', positional: ['slug'] },
 };
 
-// --- Admin ---
+// --- Brain statistics and admin health ---
 
 const get_stats: Operation = {
   name: 'get_stats',
@@ -2194,7 +2194,9 @@ const get_stats: Operation = {
   handler: async (ctx) => {
     return ctx.engine.getStats();
   },
-  scope: 'admin',
+  // Aggregate counters are safe at the ordinary authenticated read tier.
+  // Detailed health diagnostics remain admin-only in get_health below.
+  scope: 'read',
   cliHints: { name: 'stats' },
 };
 

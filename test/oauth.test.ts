@@ -666,6 +666,13 @@ describe('sweepExpiredTokens', () => {
 // ---------------------------------------------------------------------------
 
 describe('operation scope annotations', () => {
+  test('get_stats is an ordinary authenticated read for internal service pilots', () => {
+    const { operations } = require('../src/core/operations.ts');
+    expect(operations.find((operation: { name: string }) => operation.name === 'get_stats')?.scope).toBe(
+      'read',
+    );
+  });
+
   test('all operations have a scope', () => {
     const { operations } = require('../src/core/operations.ts');
     for (const op of operations) {
