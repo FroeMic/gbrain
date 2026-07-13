@@ -43,6 +43,7 @@ import {
   SemanticQueryCache,
   loadCacheConfig,
 } from './query-cache.ts';
+import { profileStage, setActiveProfileAttributes } from './profiling.ts';
 
 export const RRF_K = 60;
 const COMPILED_TRUTH_BOOST = 2.0;
@@ -434,6 +435,15 @@ export async function runPostFusionStages(
   results: SearchResult[],
   opts: PostFusionOpts,
 ): Promise<void> {
+  return profileStage('post_fusion', { result_count: results.length }, () =>
+    runPostFusionStagesUnprofiled(engine, results, opts));
+}
+
+async function runPostFusionStagesUnprofiled(
+  engine: import('../engine.ts').BrainEngine,
+  results: SearchResult[],
+  opts: PostFusionOpts,
+): Promise<void> {
   if (results.length === 0) return;
 
   // v0.40.4 attribution stamp (D12=A) — capture base_score ONCE at entry,
@@ -633,7 +643,7 @@ const MAX_ALIAS_INJECT = 3;           // cap injected pages per query (collision
  * Fail-open: pre-v110 brains (no page_aliases table) and any lookup error
  * degrade to the input unchanged (D9). Returns a NEW array; caller re-slices.
  */
-export async function applyAliasHop(
+async function applyAliasHopUnprofiled(
   engine: import('../engine.ts').BrainEngine,
   results: SearchResult[],
   query: string,
@@ -698,6 +708,16 @@ export async function applyAliasHop(
   }
   out.sort((a, b) => b.score - a.score);
   return out;
+}
+
+export async function applyAliasHop(
+  engine: import('../engine.ts').BrainEngine,
+  results: SearchResult[],
+  query: string,
+  opts: { sourceId?: string; sourceIds?: string[] } = {},
+): Promise<SearchResult[]> {
+  return profileStage('alias_hop', { result_count: results.length }, () =>
+    applyAliasHopUnprofiled(engine, results, query, opts));
 }
 
 export interface HybridSearchOpts extends SearchOpts {
@@ -967,7 +987,7 @@ export async function hybridSearch(
     ? opts.crossModal
     : (suggestions.suggestedModality ?? 'text');
   const keywordResults: SearchResult[] =
-    earlyModality === 'image' ? [] : await engine.searchKeyword(query, searchOpts);
+    earlyModality === 'image' ? [] : await profileStage('keyword', {}, () => engine.searchKeyword(query, searchOpts));
 
   // v0.29.1: resolve salience/recency from caller (back-compat aliases for
   // PR #618's `recencyBoost` numeric scale) or fall back to the heuristic.
@@ -1026,13 +1046,13 @@ export async function hybridSearch(
   // path; the parser only matches text-shaped relational queries anyway.)
   let relationalList: SearchResult[] = [];
   if (resolvedMode.relationalRetrieval) {
-    relationalList = await buildRelationalArm(engine, query, {
+    relationalList = await profileStage('relational', {}, () => buildRelationalArm(engine, query, {
       sourceId: opts?.sourceId,
       sourceIds: opts?.sourceIds,
       depth: resolvedMode.relational_retrieval_depth,
       limit: opts?.limit ?? resolvedMode.searchLimit,
       onMeta: opts?.onRelationalMeta,
-    });
+    }));
   }
 
   // Skip vector search entirely if the gateway has no embedding provider configured (Codex C3).
@@ -1043,6 +1063,7 @@ export async function hybridSearch(
   const { isAvailable } = await import('../ai/gateway.ts');
   const providerProbe = resolvedCol.embeddingModel || undefined;
   if (!isAvailable('embedding', providerProbe)) {
+    setActiveProfileAttributes({ decision: 'vector_skipped', fallback: 'keyword' });
     // v0.43 — fuse the relational arm with keyword so typed-edge answers
     // survive on the no-embedding-provider path (the relational win is most
     // valuable exactly when vector is unavailable).
@@ -1142,7 +1163,7 @@ export async function hybridSearch(
   const expansionAllowed = resolvedMode.expansion && effectiveModality !== 'image';
   if (expansionAllowed && opts?.expandFn) {
     try {
-      queries = await opts.expandFn(query);
+      queries = await profileStage('expansion', {}, () => opts.expandFn!(query));
       if (queries.length === 0) queries = [query];
       // "Applied" = produced variants beyond the original, not just called.
       expansionApplied = queries.length > 1;
@@ -1253,11 +1274,11 @@ export async function hybridSearch(
       // share one ~6s budget); direct callers get a fresh deadline. On timeout
       // the embed throws → the catch below falls back to keyword-only.
       const embedDl = opts?._queryEmbedDeadline ?? makeQueryEmbedDeadline();
-      const embeddings = await Promise.all(queries.map(q => embedQueryBounded(q, embedOpts, embedDl)));
+      const embeddings = await profileStage('query_embedding', {}, () =>
+        Promise.all(queries.map(q => embedQueryBounded(q, embedOpts, embedDl))));
       queryEmbedding = embeddings[0];
-      const textLists = await Promise.all(
-        embeddings.map(emb => engine.searchVector(emb, searchOpts)),
-      );
+      const textLists = await profileStage('vector', { candidate_count: embeddings.length }, () =>
+        Promise.all(embeddings.map(emb => engine.searchVector(emb, searchOpts))));
       for (const list of textLists) {
         for (const r of list) {
           r.modality = r.modality ?? 'text';
@@ -1270,6 +1291,7 @@ export async function hybridSearch(
       }
     } catch {
       // Embedding failure is non-fatal, fall back to keyword-only
+      setActiveProfileAttributes({ fallback: 'keyword', decision: 'vector_failed' });
     }
   }
 
@@ -1360,14 +1382,16 @@ export async function hybridSearch(
     allLists.push({ list: relationalList, k: baseRrfK });
   }
 
-  let fused = rrfFusionWeighted(allLists, detail !== 'high');
+  let fused = await profileStage('fusion', { candidate_count: allLists.reduce((n, arm) => n + arm.list.length, 0) }, () =>
+    rrfFusionWeighted(allLists, detail !== 'high'));
 
   // Cosine re-scoring before dedup so semantically better chunks survive.
   // v0.36 (D9): hydrate from the active embedding column so rescore happens
   // in the same vector space the HNSW just ranked in. Pre-v0.36 this
   // always pulled from `embedding` and silently corrupted alt-column ranks.
   if (queryEmbedding) {
-    fused = await cosineReScore(engine, fused, queryEmbedding, resolvedCol.name);
+    fused = await profileStage('fusion', { decision: 'cosine_rescore', candidate_count: fused.length }, () =>
+      cosineReScore(engine, fused, queryEmbedding!, resolvedCol.name));
   }
 
   // v0.29.1: post-fusion stages (backlink + salience + recency) run via
@@ -1400,11 +1424,11 @@ export async function hybridSearch(
   if (needsExpansion) {
     const anchorSet = fused.slice(0, Math.max(10, limit));
     try {
-      const expanded = await expandAnchors(engine, anchorSet, {
+      const expanded = await profileStage('expansion', { decision: 'structural' }, () => expandAnchors(engine, anchorSet, {
         walkDepth,
         nearSymbol: opts?.nearSymbol,
         sourceId: opts?.sourceId,
-      });
+      }));
       // Resolve new chunk IDs (not already in fused) into full rows.
       const existingIds = new Set(fused.map(r => r.chunk_id));
       const newIds = expanded
@@ -1459,8 +1483,9 @@ export async function hybridSearch(
     timeoutMs: resolvedMode.reranker_timeout_ms,
   };
   const reranked = rerankerOpts.enabled
-    ? await applyReranker(query, deduped, rerankerOpts as any)
-    : deduped;
+    ? await profileStage('rerank', { model: rerankerOpts.model, timeout_ms: rerankerOpts.timeoutMs, candidate_count: deduped.length }, () =>
+      applyReranker(query, deduped, rerankerOpts as any))
+    : (setActiveProfileAttributes({ decision: 'rerank_skipped' }), deduped);
 
   // T3 — free-text alias hop. Runs AFTER rerank so a query that is a page's
   // declared chosen name reliably surfaces that page regardless of how the
@@ -1489,7 +1514,8 @@ export async function hybridSearch(
   let returnPool = aliasHopped;
   let adaptiveDecision: AdaptiveReturnDecision | undefined;
   if (adaptiveCfg.enabled && offset === 0) {
-    const r = applyAdaptiveReturn(aliasHopped, suggestions.intent, adaptiveCfg);
+    const r = await profileStage('return_policy', { decision: 'adaptive_return' }, () =>
+      applyAdaptiveReturn(aliasHopped, suggestions.intent, adaptiveCfg));
     returnPool = r.kept;
     adaptiveDecision = r.decision;
   }
@@ -1507,7 +1533,7 @@ export async function hybridSearch(
   // never-empty failsafe (1); jumpRatio comes from the resolved mode.
   let autocutDecision: AutocutDecision | undefined;
   if (resolvedMode.autocut && offset === 0) {
-    const r = applyAutocut(
+    const r = await profileStage('return_policy', { decision: 'autocut' }, () => applyAutocut(
       returnPool,
       (x) => x.rerank_score,
       { enabled: true, jumpRatio: resolvedMode.autocut_jump, minKeep: 1 },
@@ -1515,7 +1541,7 @@ export async function hybridSearch(
       // page AFTER reranking, so it has no rerank_score. Without this it would
       // be dropped whenever autocut cuts on the scored set (Codex P1).
       (x) => x.alias_hit === true,
-    );
+    ));
     returnPool = r.kept;
     autocutDecision = r.decision;
   }
@@ -1665,6 +1691,7 @@ export async function hybridSearchCached(
     adaptiveReturnOn;
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';
+  setActiveProfileAttributes({ cache_status: cacheStatus, decision: skipCache ? 'skip' : 'lookup' });
   let cacheSimilarity: number | undefined;
   let cacheAge: number | undefined;
 
@@ -1695,20 +1722,25 @@ export async function hybridSearchCached(
         // v0.42.20.0 (Fix 3) — bounded by the shared deadline; on timeout this
         // throws → caught below → cacheStatus 'disabled' → falls through to the
         // inner hybridSearch (which reuses the same elapsed deadline).
-        queryEmbedding = await embedQueryBounded(query, undefined, queryEmbedDl);
+        queryEmbedding = await profileStage('cache_embedding', {}, () =>
+          embedQueryBounded(query, undefined, queryEmbedDl));
       } else {
         cacheStatus = 'disabled';
+        setActiveProfileAttributes({ cache_status: cacheStatus, fallback: 'uncached' });
       }
     } catch {
       cacheStatus = 'disabled';
       queryEmbedding = null;
+      setActiveProfileAttributes({ cache_status: cacheStatus, fallback: 'uncached' });
     }
   }
 
   if (!skipCache && queryEmbedding && cacheStatus !== 'disabled') {
-    const hit = await cache.lookup(queryEmbedding, { sourceId: cacheScopeKey(opts), knobsHash: cacheKnobsHash });
+    const hit = await profileStage('cache_lookup', {}, () =>
+      cache.lookup(queryEmbedding, { sourceId: cacheScopeKey(opts), knobsHash: cacheKnobsHash }));
     if (hit.hit && hit.results) {
       cacheStatus = 'hit';
+      setActiveProfileAttributes({ cache_status: cacheStatus });
       cacheSimilarity = hit.similarity;
       cacheAge = hit.ageSeconds;
 

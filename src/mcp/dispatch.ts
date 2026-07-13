@@ -7,9 +7,32 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
+import { context, propagation, trace } from '@opentelemetry/api';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { operations, OperationError } from '../core/operations.ts';
 import type { Operation, OperationContext, AuthInfo } from '../core/operations.ts';
 import { loadConfig } from '../core/config.ts';
+
+propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+
+export interface PrivateTraceCarrier {
+  traceparent?: string;
+  tracestate?: string;
+}
+
+/** Keep the private carrier limited to standard W3C trace fields. */
+export function privateTraceCarrier(meta: Record<string, unknown> | undefined): PrivateTraceCarrier {
+  if (!meta) return {};
+  return {
+    ...(typeof meta.traceparent === 'string' ? { traceparent: meta.traceparent } : {}),
+    ...(typeof meta.tracestate === 'string' ? { tracestate: meta.tracestate } : {}),
+  };
+}
+
+export function extractPrivateTraceContext(carrier: PrivateTraceCarrier | undefined) {
+  if (!carrier || (!carrier.traceparent && !carrier.tracestate)) return context.active();
+  return propagation.extract(context.active(), carrier);
+}
 
 export interface ToolResult {
   content: { type: 'text'; text: string }[];
@@ -70,6 +93,8 @@ export interface DispatchOpts {
    * was replaced by dispatchToolCall.
    */
   auth?: AuthInfo;
+  /** Internal MCP `_meta` carrier; never part of operation params or results. */
+  privateTraceMeta?: Record<string, unknown>;
 }
 
 /**
@@ -248,9 +273,10 @@ export async function dispatchToolCall(
   }
 
   const ctx = buildOperationContext(engine, safeParams, opts);
+  const parentContext = extractPrivateTraceContext(privateTraceCarrier(opts.privateTraceMeta));
 
   try {
-    const result = await op.handler(ctx, safeParams);
+    const result = await context.with(parentContext, () => op.handler(ctx, safeParams));
     const out: ToolResult = { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     // v0.31 (eD3 + eE4): best-effort _meta.brain_hot_memory injection.
     // The hook is wrapped in its own try/catch — any DB blip / cache miss /
