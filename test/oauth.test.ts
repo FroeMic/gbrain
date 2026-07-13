@@ -341,6 +341,7 @@ describe('verifyAccessToken', () => {
 
     const authInfo = await provider.verifyAccessToken(legacyToken);
     expect(authInfo.clientId).toBe('legacy-agent');
+    expect((authInfo as CoreAuthInfo).clientKind).toBe('external');
     expect(authInfo.scopes).toEqual(['read', 'write', 'admin']); // grandfathered full access
   });
 

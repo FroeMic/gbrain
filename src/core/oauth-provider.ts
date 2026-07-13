@@ -718,6 +718,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       return {
         token,
         clientId: name,
+        clientKind: 'external',
         clientName: name,
         scopes: ['read', 'write', 'admin'],
         expiresAt: Math.floor(Date.now() / 1000) + 365 * 24 * 3600, // Legacy tokens never expire — set 1yr future
