@@ -28,4 +28,12 @@ describe('release contract', () => {
     expect(lockVersion).toBe(version);
     expect(topChangelogVersion()).toBe(version);
   });
+
+  test('fork release version evolves independently from upstream metadata', () => {
+    const upstreamVersion = read('VERSION').trim();
+    const forkVersion = read('FORK_VERSION').trim();
+
+    expect(forkVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(forkVersion).not.toBe(upstreamVersion);
+  });
 });
