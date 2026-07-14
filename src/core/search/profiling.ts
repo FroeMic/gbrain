@@ -2,6 +2,7 @@ import {
   SpanStatusCode,
   trace,
   type Attributes,
+  type Span,
   type TracerProvider,
 } from '@opentelemetry/api';
 
@@ -11,6 +12,9 @@ const OPERATION_NAMES = new Set(['query', 'search']);
 const STAGE_NAMES = new Set([
   'cache_embedding',
   'cache_lookup',
+  'config_cache',
+  'config_embedding',
+  'config_mode',
   'expansion',
   'keyword',
   'query_embedding',
@@ -38,6 +42,7 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'operation',
   'outcome',
   'provider',
+  'query_length',
   'result_count',
   'resolved_mode',
   'runtime_generation',
@@ -47,6 +52,9 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
 ]);
 
 let testProvider: (TracerProvider & { shutdown?: () => Promise<void> }) | undefined;
+
+const LANGFUSE_OBSERVATION_INPUT = 'langfuse.observation.input';
+const LANGFUSE_OBSERVATION_OUTPUT = 'langfuse.observation.output';
 
 function profileName(kind: 'operation' | 'stage', name: string): string {
   const allowed = kind === 'operation' ? OPERATION_NAMES : STAGE_NAMES;
@@ -84,20 +92,42 @@ async function profile<T>(
   fn: () => Promise<T> | T,
 ): Promise<T> {
   const tracer = trace.getTracer(TRACER_NAME);
-  return tracer.startActiveSpan(profileName(kind, name), { attributes: safeAttributes(attributes) }, async (span) => {
+  const input = safeAttributes(attributes);
+  return tracer.startActiveSpan(profileName(kind, name), { attributes: input }, async (span) => {
+    setObservationAttribute(span, LANGFUSE_OBSERVATION_INPUT, input);
     try {
       const result = await fn();
       span.setAttribute('outcome', 'success');
+      setObservationAttribute(span, LANGFUSE_OBSERVATION_OUTPUT, summarizeProfileResult(result));
       return result;
     } catch (error) {
       span.setAttribute('outcome', 'error');
       span.setAttribute('error_class', classifyProfileError(error));
+      setObservationAttribute(span, LANGFUSE_OBSERVATION_OUTPUT, {
+        error_class: classifyProfileError(error),
+        outcome: 'error',
+      });
       span.setStatus({ code: SpanStatusCode.ERROR });
       throw error;
     } finally {
       span.end();
     }
   });
+}
+
+function setObservationAttribute(
+  span: Span,
+  key: string,
+  value: Record<string, unknown>,
+): void {
+  span.setAttribute(key, JSON.stringify(value));
+}
+
+function summarizeProfileResult(value: unknown): Record<string, unknown> {
+  if (Array.isArray(value)) return { result_count: value.length, result_type: 'array' };
+  if (value instanceof Float32Array) return { dimensions: value.length, result_type: 'vector' };
+  if (value === null) return { result_type: 'null' };
+  return { result_type: typeof value };
 }
 
 export function profileOperation<T>(

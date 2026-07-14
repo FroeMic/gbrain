@@ -841,7 +841,8 @@ export async function hybridSearch(
   // per-mode evals would not test production search if modes lived only in
   // the wrapper. See `[CDX-5+6]` in the plan.
   const { loadSearchModeConfig, resolveSearchMode } = await import('./mode.ts');
-  const modeInput = await loadSearchModeConfig(engine);
+  const modeInput = await profileStage('config_mode', { decision: 'load' }, () =>
+    loadSearchModeConfig(engine));
   const resolvedMode = resolveSearchMode({
     // T4/D5 — per-call mode selector (e.g. `--mode tokenmax`). The op layer
     // only passes this for trusted/local callers; remote callers leave it
@@ -882,7 +883,8 @@ export async function hybridSearch(
   // Failing cfg load (pre-config brain, mid-migration, no engine.getConfig)
   // falls through to the file-plane sync loadConfig() — same shape, just
   // misses DB-plane overrides.
-  const mergedCfg = await loadConfigWithEngine(engine).catch(() => null);
+  const mergedCfg = await profileStage('config_embedding', { decision: 'load' }, () =>
+    loadConfigWithEngine(engine)).catch(() => null);
   const cfgForColumn = mergedCfg ?? ((await import('../config.ts')).loadConfig()) ?? null;
   const resolvedCol = cfgForColumn
     ? resolveEmbeddingColumn(opts, cfgForColumn)
@@ -1602,7 +1604,8 @@ export async function hybridSearchCached(
   // that scopes the cache row so a tokenmax write can't be served to a
   // conservative read. See [CDX-4] in the plan.
   const { loadSearchModeConfig, resolveSearchMode, knobsHash } = await import('./mode.ts');
-  const modeInputForCache = await loadSearchModeConfig(engine);
+  const modeInputForCache = await profileStage('config_mode', { decision: 'load' }, () =>
+    loadSearchModeConfig(engine));
   const resolvedForCache = resolveSearchMode({
     // T4/D5 — per-call mode folds into the cache key (resolved_mode is part
     // of knobsHash) so a per-call `--mode tokenmax` read can't be served a
@@ -1647,7 +1650,8 @@ export async function hybridSearchCached(
   // provider/dim. isCacheSafe compares the resolved column's full
   // embedding space (name + dim + model) against cfg and returns true
   // only when ALL match. Otherwise skip.
-  const mergedCfgCached = await loadConfigWithEngine(engine).catch(() => null);
+  const mergedCfgCached = await profileStage('config_embedding', { decision: 'load' }, () =>
+    loadConfigWithEngine(engine)).catch(() => null);
   const cfgCached = mergedCfgCached ?? ((await import('../config.ts')).loadConfig()) ?? { engine: 'pglite' as const };
   const resolvedColCached = resolveEmbeddingColumn(opts, cfgCached);
   const isNonDefaultColumn = !isCacheSafe(resolvedColCached, cfgCached);
@@ -1662,7 +1666,8 @@ export async function hybridSearchCached(
   // Cache decision: opts.useCache (explicit) wins over global config; global
   // config wins over mode bundle default. Mode bundle is on for all 3 modes
   // today; the resolver already folded everything through.
-  const cacheCfg = await loadCacheConfig(engine);
+  const cacheCfg = await profileStage('config_cache', { decision: 'load' }, () =>
+    loadCacheConfig(engine));
   const cacheEnabled = resolvedForCache.cache_enabled;
   const cache = new SemanticQueryCache(engine, {
     ...cacheCfg,

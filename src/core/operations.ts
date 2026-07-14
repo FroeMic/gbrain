@@ -1444,7 +1444,7 @@ const search: Operation = {
     const keywordOnly = (await ctx.engine.getConfig('search.mcp_keyword_only')) === 'true';
 
     if (keywordOnly) {
-      const raw = await profileOperation('search', { operation: 'search' }, () =>
+      const raw = await profileOperation('search', { operation: 'search', query_length: queryText.length }, () =>
         profileStage('keyword', { decision: 'keyword_only' }, () =>
           ctx.engine.searchKeyword(queryText, { limit, offset, ...scope })));
       const results = dedupResults(raw);
@@ -1461,7 +1461,7 @@ const search: Operation = {
     // Cheap-hybrid (D4/D15): full vector+keyword+RRF+pool+title+alias, but
     // expansion OFF (no per-call LLM cost). `query` op is the full-control variant.
     let capturedMeta: HybridSearchMeta | null = null;
-    const results = await profileOperation('search', { operation: 'search' }, () => hybridSearchCached(ctx.engine, queryText, {
+    const results = await profileOperation('search', { operation: 'search', query_length: queryText.length }, () => hybridSearchCached(ctx.engine, queryText, {
       limit,
       offset,
       expansion: false,
@@ -1636,7 +1636,7 @@ const query: Operation = {
     // v0.32.x search-lite: route the query op through hybridSearchCached so
     // semantic cache + token budget + intent weighting fire automatically.
     // Plain hybridSearch remains the bare API for callers that opt out.
-    const results = await profileOperation('query', { operation: 'query' }, () => hybridSearchCached(ctx.engine, queryText, {
+    const results = await profileOperation('query', { operation: 'query', query_length: queryText.length }, () => hybridSearchCached(ctx.engine, queryText, {
       limit: (p.limit as number) || 20,
       offset: (p.offset as number) || 0,
       expansion: expand,

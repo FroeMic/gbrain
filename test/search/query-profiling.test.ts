@@ -42,7 +42,13 @@ describe('query profiling', () => {
       'gbrain.operation.query',
     ]);
     expect(spans[0]?.parentSpanContext?.spanId).toBe(spans[1]?.spanContext().spanId);
-    expect(spans[0]?.attributes).toEqual({ outcome: 'success', result_count: 2 });
+    expect(spans[0]?.attributes).toMatchObject({ outcome: 'success', result_count: 2 });
+    expect(spans[0]?.attributes['langfuse.observation.input']).toBe(
+      JSON.stringify({ outcome: 'success', result_count: 2 }),
+    );
+    expect(spans[0]?.attributes['langfuse.observation.output']).toBe(
+      JSON.stringify({ result_count: 1, result_type: 'array' }),
+    );
     const envelope = spans.map((span) => ({ name: span.name, attributes: span.attributes, events: span.events }));
     expect(JSON.stringify(envelope)).not.toContain('must never be exported');
     expect(JSON.stringify(envelope)).not.toContain('secret.example.test');
@@ -99,7 +105,8 @@ describe('query profiling', () => {
   test('uses the closed semantic stage vocabulary for hit, skip, and fallback paths', async () => {
     const { exporter } = installMemoryProvider();
     const stages = [
-      'cache_embedding', 'cache_lookup', 'expansion', 'keyword', 'query_embedding',
+      'cache_embedding', 'cache_lookup', 'config_cache', 'config_embedding', 'config_mode',
+      'expansion', 'keyword', 'query_embedding',
       'vector', 'relational', 'fusion', 'post_fusion', 'rerank', 'alias_hop',
       'return_policy', 'serialize',
     ];
