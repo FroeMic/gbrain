@@ -14,7 +14,7 @@
  *   │ (pooler, port 6543)         │
  *   └────────┬────────────────────┘
  *            │
- *            ▼ auto-detect Supabase
+ *            ▼ explicit direct URL or auto-detect Supabase
  *   ┌──────────────┐    ┌──────────────┐
  *   │  read pool   │    │ direct pool  │
  *   │  size 10     │    │ size 3       │
@@ -33,7 +33,8 @@
  *    legacy path. With parent set, inherit parent's kill-switch state (A2).
  *  - Audit (F8): every acquire/release/error logs to connection-events.jsonl.
  *  - Non-Supabase passthrough: if URL isn't a Supabase pooler and no
- *    GBRAIN_DIRECT_DATABASE_URL override, ddl()/bulk() share the read pool.
+ *    GBRAIN_DIRECT_DATABASE_URL override is supplied, ddl()/bulk() share the
+ *    read pool. An explicit direct URL enables split routing for any host.
  */
 
 import postgres from 'postgres';
@@ -72,6 +73,8 @@ export interface ConnectionManagerOpts {
    */
   readPoolOwnedExternally?: boolean;
 }
+
+export type DirectUrlSource = 'explicit' | 'inferred' | 'none';
 
 /** Default direct-pool size (P1 raised from 2 to 3). Override via env. */
 export const DEFAULT_DIRECT_POOL_SIZE = 3;
@@ -197,6 +200,7 @@ export class ConnectionManager {
   private _directPool: Sql | null = null;
   private _killSwitch: boolean;
   private _directUrl: string | null;
+  private _directUrlSource: DirectUrlSource;
   private _isSupabase: boolean;
 
   constructor(opts: ConnectionManagerOpts) {
@@ -208,6 +212,7 @@ export class ConnectionManager {
       this._killSwitch = opts.parent.isKillSwitchActive();
       this._isSupabase = opts.parent.isSupabase();
       this._directUrl = opts.parent.resolveDirectUrl();
+      this._directUrlSource = opts.parent.directUrlSource();
       this._readPool = opts.parent.peekReadPool();
       this._readPoolOwnedExternally = true; // never end the parent's pool
     } else {
@@ -215,18 +220,26 @@ export class ConnectionManager {
       this._isSupabase = isSupabasePoolerUrl(opts.url);
       // Direct URL: explicit override > env > derive > null
       const envOverride = process.env.GBRAIN_DIRECT_DATABASE_URL;
-      this._directUrl = opts.directUrl ?? envOverride ?? deriveDirectUrl(opts.url);
+      const explicitUrl = opts.directUrl ?? envOverride;
+      if (explicitUrl !== undefined && explicitUrl !== null) {
+        this._directUrl = explicitUrl || null;
+        this._directUrlSource = explicitUrl ? 'explicit' : 'none';
+      } else {
+        this._directUrl = deriveDirectUrl(opts.url);
+        this._directUrlSource = this._directUrl ? 'inferred' : 'none';
+      }
     }
   }
 
-  /** Whether dual-pool routing is active (false on non-Supabase or kill-switch). */
+  /** Whether dual-pool routing is active (false only without a direct route or on kill-switch). */
   isDualPoolActive(): boolean {
-    return this._isSupabase && !this._killSwitch && !!this._directUrl;
+    return !this._killSwitch && !!this._directUrl;
   }
 
   isSupabase(): boolean { return this._isSupabase; }
   isKillSwitchActive(): boolean { return this._killSwitch; }
   resolveDirectUrl(): string | null { return this._directUrl; }
+  directUrlSource(): DirectUrlSource { return this._directUrlSource; }
 
   /**
    * Internal: peek at the read pool without forcing init. Used by parent
@@ -422,17 +435,20 @@ export class ConnectionManager {
    */
   describeMode(): {
     mode: 'split' | 'single (kill-switch)' | 'single (non-supabase)' | 'single (no-direct-url)';
+    direct_url_source: DirectUrlSource;
     direct_host?: string;
     kill_switch_active: boolean;
     direct_pool_size: number;
   } {
     let mode: 'split' | 'single (kill-switch)' | 'single (non-supabase)' | 'single (no-direct-url)';
-    if (!this._isSupabase) mode = 'single (non-supabase)';
-    else if (this._killSwitch) mode = 'single (kill-switch)';
+    if (this._killSwitch) mode = 'single (kill-switch)';
+    else if (this.isDualPoolActive()) mode = 'split';
+    else if (!this._isSupabase) mode = 'single (non-supabase)';
     else if (!this._directUrl) mode = 'single (no-direct-url)';
     else mode = 'split';
     return {
       mode,
+      direct_url_source: this._directUrlSource,
       direct_host: this._directUrl ? this.hostOnly(this._directUrl) : undefined,
       kill_switch_active: this._killSwitch,
       direct_pool_size: resolveDirectPoolSize(this.opts.directPoolSize),
