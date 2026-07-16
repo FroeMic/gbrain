@@ -15,10 +15,12 @@
 
 import { describe, it, expect } from 'bun:test';
 import { execFileSync } from 'child_process';
+import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..');
 const SHARD_SH = resolve(REPO_ROOT, 'scripts/run-unit-shard.sh');
+const CI_LOCAL_SH = resolve(REPO_ROOT, 'scripts/ci-local.sh');
 
 function dryRunList(): string[] {
   const out = execFileSync('bash', [SHARD_SH, '--dry-run-list'], {
@@ -30,6 +32,19 @@ function dryRunList(): string[] {
 }
 
 describe('run-unit-shard.sh exclusion symmetry', () => {
+  it('ci-local four-shard workers pass a bounded Bun concurrency', () => {
+    const source = readFileSync(CI_LOCAL_SH, 'utf8');
+    expect(source).toMatch(
+      /run-unit-shard\.sh\s+--max-concurrency=/,
+    );
+    expect(source).toContain('GBRAIN_TEST_MAX_CONCURRENCY:-4');
+  });
+
+  it('ci-local executes the quarantined serial lane', () => {
+    const source = readFileSync(CI_LOCAL_SH, 'utf8');
+    expect(source).toContain('bash scripts/run-serial-tests.sh');
+  });
+
   it('lists at least one plain *.test.ts file', () => {
     const files = dryRunList();
     expect(files.length).toBeGreaterThan(0);

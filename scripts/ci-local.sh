@@ -190,7 +190,9 @@ bash scripts/check-trailing-newline.sh
 bash scripts/check-wasm-embedded.sh
 bun run typecheck
 echo "[runner] unit (unsharded, DATABASE_URL unset)"
-env -u DATABASE_URL bash scripts/run-unit-shard.sh
+env -u DATABASE_URL bash scripts/run-unit-shard.sh --max-concurrency="${GBRAIN_TEST_MAX_CONCURRENCY:-4}"
+echo "[runner] serial unit tests"
+bash scripts/run-serial-tests.sh
 echo "[runner] e2e (unsharded, --diff selected)"
 SELECTED=$(bun run scripts/select-e2e.ts)
 if [ -z "$SELECTED" ]; then
@@ -209,7 +211,9 @@ bash scripts/check-trailing-newline.sh
 bash scripts/check-wasm-embedded.sh
 bun run typecheck
 echo "[runner] unit (unsharded, DATABASE_URL unset)"
-env -u DATABASE_URL bash scripts/run-unit-shard.sh
+env -u DATABASE_URL bash scripts/run-unit-shard.sh --max-concurrency="${GBRAIN_TEST_MAX_CONCURRENCY:-4}"
+echo "[runner] serial unit tests"
+bash scripts/run-serial-tests.sh
 echo "[runner] e2e (unsharded)"
 DATABASE_URL=postgresql://postgres:postgres@postgres-1:5432/gbrain_test \
 GBRAIN_PGBOUNCER_URL=postgresql://postgres:postgres@pgbouncer:5432/gbrain_pgbouncer \
@@ -253,7 +257,7 @@ printf '%s\\n' 1 2 3 4 | xargs -P4 -I{} sh -c '
   log=/tmp/shard-logs/shard-\${shard}.log
   echo \"[shard \${shard}] start\" > \$log
   echo \"[shard \${shard}] unit phase (SHARD=\${shard}/4, DATABASE_URL unset)\" >> \$log
-  env -u DATABASE_URL SHARD=\${shard}/4 bash scripts/run-unit-shard.sh >> \$log 2>&1
+  env -u DATABASE_URL SHARD=\${shard}/4 bash scripts/run-unit-shard.sh --max-concurrency=\${GBRAIN_TEST_MAX_CONCURRENCY:-4} >> \$log 2>&1
   unit_exit=\$?
   if [ \$unit_exit -ne 0 ]; then
     echo \"[shard \${shard}] UNIT FAILED (exit=\$unit_exit)\" >> \$log
@@ -282,6 +286,16 @@ printf '%s\\n' 1 2 3 4 | xargs -P4 -I{} sh -c '
 ' _ {}
 shard_xargs_exit=\$?
 set -e
+if [ \$shard_xargs_exit -eq 0 ]; then
+  echo \"[runner] serial unit tests\"
+  set +e
+  bash scripts/run-serial-tests.sh
+  serial_exit=\$?
+  set -e
+  if [ \$serial_exit -ne 0 ]; then
+    shard_xargs_exit=\$serial_exit
+  fi
+fi
 echo \"\"
 echo \"=== SHARD LOGS (last 30 lines each + unit/e2e summaries) ===\"
 for s in 1 2 3 4; do
