@@ -1,4 +1,7 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 
 // Mock the embedding module BEFORE importing runEmbed, so runEmbed picks up
@@ -12,6 +15,8 @@ let totalEmbedCalls = 0;
 let lastEmbedBatchOpts: unknown = undefined;
 // D5: pluggable behavior for tests that need to simulate 429s or aborts.
 let embedBatchBehavior: ((texts: string[], opts?: unknown) => Promise<Float32Array[]>) | null = null;
+let oldGbrainHome: string | undefined;
+let testGbrainHome: string;
 
 mock.module('../src/core/embedding.ts', () => ({
   embedBatch: async (texts: string[], opts?: unknown) => {
@@ -69,6 +74,9 @@ function mockEngine(overrides: Partial<Record<string, any>> = {}): BrainEngine {
 }
 
 beforeEach(() => {
+  oldGbrainHome = process.env.GBRAIN_HOME;
+  testGbrainHome = mkdtempSync(join(tmpdir(), 'gbrain-embed-test-'));
+  process.env.GBRAIN_HOME = testGbrainHome;
   activeEmbedCalls = 0;
   maxConcurrentEmbedCalls = 0;
   totalEmbedCalls = 0;
@@ -77,6 +85,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (oldGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = oldGbrainHome;
+  rmSync(testGbrainHome, { recursive: true, force: true });
   delete process.env.GBRAIN_EMBED_CONCURRENCY;
   delete process.env.GBRAIN_EMBED_TIME_BUDGET_MS;
 });
