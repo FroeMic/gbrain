@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect, afterEach } from 'bun:test';
-import { resolvePrepare } from '../src/core/db.ts';
+import { isTransactionPooledUrl, resolvePrepare } from '../src/core/db.ts';
 
 describe('resolvePrepare', () => {
   afterEach(() => {
@@ -20,6 +20,11 @@ describe('resolvePrepare', () => {
 
   test('returns false for Supabase pooler port 6543', () => {
     expect(resolvePrepare('postgresql://user:pass@host:6543/db')).toBe(false);
+  });
+
+  test('recognizes the hosted PgBouncer port 6432', () => {
+    expect(isTransactionPooledUrl('postgresql://user:pass@host:6432/db')).toBe(true);
+    expect(isTransactionPooledUrl('postgresql://user:pass@host:5432/db')).toBe(false);
   });
 
   test('returns undefined for direct Postgres port 5432', () => {

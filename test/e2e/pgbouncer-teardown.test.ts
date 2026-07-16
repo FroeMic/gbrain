@@ -176,4 +176,44 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
       else process.env.GBRAIN_POOL_SIZE = originalPoolSize;
     }
   }, 120_000);
+
+  test('pool-owned query and idle-transaction timeouts survive reassignment', async () => {
+    const pooled = new URL(POOLED_URL!);
+    pooled.pathname = `/${TEST_DB}`;
+    const poolUrl = pooled.toString();
+    // CI config sets PgBouncer query_timeout=1. Repeating after each
+    // cancellation proves the timeout is owned by the pooler, not a stale
+    // client session setting tied to one backend.
+    for (let i = 0; i < 2; i++) {
+      const pool = postgres(poolUrl, { max: 1, prepare: false });
+      try {
+        let queryError: unknown;
+        try {
+          await pool.unsafe('SELECT pg_sleep(2)');
+        } catch (error) {
+          queryError = error;
+        }
+        expect(String(queryError)).toMatch(/timeout|cancel|closed|terminat/i);
+      } finally {
+        await pool.end({ timeout: 5 });
+      }
+    }
+
+    const pool = postgres(poolUrl, { max: 1, prepare: false });
+    try {
+      let idleError: unknown;
+      try {
+        await pool.begin(async tx => {
+          await tx`SELECT 1`;
+          await new Promise(resolve => setTimeout(resolve, 1_500));
+          await tx`SELECT 1`;
+        });
+      } catch (error) {
+        idleError = error;
+      }
+      expect(String(idleError)).toMatch(/timeout|idle|closed|terminat/i);
+    } finally {
+      await pool.end({ timeout: 5 });
+    }
+  }, 120_000);
 });

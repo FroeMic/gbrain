@@ -3,8 +3,8 @@
  *
  * Three pools, one decision: read() goes to the pooler (port 6543, fast,
  * many connections); ddl() and bulk() go to a direct connection (port 5432,
- * 30min statement_timeout, capped at 3 conns) so DDL doesn't time out on
- * the Supabase pooler's 2-min statement_timeout.
+ * 30min statement_timeout, capped at 3 conns) so DDL does not inherit the
+ * pooled endpoint's shorter query timeout.
  *
  * The connection-manager is the URL-routing layer. It layers on top of
  * postgres.js's existing pool primitives + PostgresEngine.withReservedConnection.
@@ -38,7 +38,7 @@
  */
 
 import postgres from 'postgres';
-import { resolvePrepare, resolveSessionTimeouts, resolvePoolSize, endPoolBounded } from './db.ts';
+import { isTransactionPooledUrl, resolvePrepare, resolveSessionTimeouts, resolvePoolSize, endPoolBounded } from './db.ts';
 import { redactPgUrl } from './url-redact.ts';
 import { logConnectionEvent } from './connection-audit.ts';
 
@@ -278,11 +278,10 @@ export class ConnectionManager {
       connect_timeout: 10,
       types: { bigint: postgres.BigInt },
     };
-    const timeouts = resolveSessionTimeouts();
+    const transactionPooled = isTransactionPooledUrl(this.opts.url) || Boolean(this._directUrl);
+    const timeouts = resolveSessionTimeouts({ transactionPooled });
     if (Object.keys(timeouts).length > 0) opts.connection = timeouts;
-    const prepare = resolvePrepare(this.opts.url, {
-      transactionPooled: Boolean(this._directUrl),
-    });
+    const prepare = resolvePrepare(this.opts.url, { transactionPooled });
     if (typeof prepare === 'boolean') opts.prepare = prepare;
     this._readPool = postgres(this.opts.url, opts);
     logConnectionEvent({ pool: 'read', op: 'init' });
@@ -464,7 +463,7 @@ export class ConnectionManager {
       kill_switch_active: this._killSwitch,
       read_pool_size: resolvePoolSize(this.opts.readPoolSize),
       read_prepare: resolvePrepare(this.opts.url, {
-        transactionPooled: Boolean(this._directUrl),
+        transactionPooled: isTransactionPooledUrl(this.opts.url) || Boolean(this._directUrl),
       }) ?? 'default',
       direct_pool_size: resolveDirectPoolSize(this.opts.directPoolSize),
     };

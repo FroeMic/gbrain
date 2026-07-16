@@ -69,7 +69,17 @@ const DEFAULT_POOL_SIZE_FALLBACK = 10;
  * `GBRAIN_PREPARE=true` env var (or `?prepare=true` on the URL) is the
  * documented escape hatch.
  */
-const AUTO_DETECT_PORTS = new Set(['6543']);
+const AUTO_DETECT_PORTS = new Set(['6432', '6543']);
+
+/** True when a URL uses one of the conventional transaction-pooler ports. */
+export function isTransactionPooledUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url.replace(/^postgres(ql)?:\/\//, 'http://'));
+    return AUTO_DETECT_PORTS.has(parsed.port);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Decide whether to force `prepare: true`/`false` on the postgres.js client.
@@ -130,7 +140,7 @@ export function resolvePoolSize(explicit?: number): number {
 }
 
 /**
- * Session-level GUCs applied to every new backend connection. Prevents
+ * Session-level GUCs applied to every new direct backend connection. Prevents
  * orphan pgbouncer sessions from holding locks or running queries
  * indefinitely when the postgres.js client disconnects mid-transaction
  * (typical cause: autopilot SIGKILL'd by launchd, worker crash-loop,
@@ -157,22 +167,29 @@ export function resolvePoolSize(explicit?: number): number {
  *
  * Set any env var to '0' or 'off' to disable that GUC entirely.
  *
- * Delivered via postgres.js's `connection` option, which sends these as
- * startup parameters in the initial connection packet. Works correctly
- * with PgBouncer session mode AND transaction mode: startup parameters
- * pass through to the backend on connection creation and persist for the
- * backend's lifetime (unlike `SET` commands which transaction-mode
- * PgBouncer strips between transactions).
+ * Delivered via postgres.js's `connection` option for direct connections. A
+ * transaction-pooled route deliberately returns no session GUCs here: the
+ * PgBouncer runtime owns the pooled baseline with query_timeout and
+ * idle_transaction_timeout, because untracked startup parameters are either
+ * rejected or ignored by PgBouncer.
  *
  * Supersedes the v0.21.0 `setSessionDefaults(sql)` helper, which used
  * a post-pool `SET` command. That approach is unreliable in PgBouncer
  * transaction mode (transaction-mode poolers strip session-state SETs
- * between transactions); startup parameters are durable.
+ * between transactions); direct startup parameters are durable, while the
+ * pooled baseline belongs to PgBouncer.
  */
 const DEFAULT_STATEMENT_TIMEOUT = '5min';
 const DEFAULT_IDLE_TX_TIMEOUT = '5min';
 
-export function resolveSessionTimeouts(): Record<string, string> {
+export type SessionTimeoutResolutionOptions = {
+  transactionPooled?: boolean;
+};
+
+export function resolveSessionTimeouts(
+  options: SessionTimeoutResolutionOptions = {},
+): Record<string, string> {
+  if (options.transactionPooled) return {};
   const out: Record<string, string> = {};
   const add = (envKey: string, gucKey: string, defaultVal: string) => {
     const raw = process.env[envKey];
@@ -192,9 +209,9 @@ export function resolveSessionTimeouts(): Record<string, string> {
 /**
  * Backward-compat shim for v0.21.0's `setSessionDefaults` callers.
  * The current implementation no-ops because session timeouts are now
- * applied at connection-startup time via `resolveSessionTimeouts()` +
- * postgres.js's `connection` option (more durable across PgBouncer
- * transaction mode).
+ * applied at connection-startup time for direct connections via
+ * `resolveSessionTimeouts()` + postgres.js's `connection` option. Pooled
+ * connections use the PgBouncer-owned baseline instead.
  *
  * Kept as a callable function so existing call sites in `connect()` and
  * `PostgresEngine.connect()` don't need to be touched on the merge —
@@ -249,10 +266,10 @@ export async function connect(config: EngineConfig): Promise<boolean> {
 
   try {
     const connectionStartedAt = performance.now();
-    const prepare = resolvePrepare(url, {
-      transactionPooled: Boolean(process.env.GBRAIN_DIRECT_DATABASE_URL?.trim()),
-    });
-    const timeouts = resolveSessionTimeouts();
+    const transactionPooled = isTransactionPooledUrl(url) ||
+      Boolean(process.env.GBRAIN_DIRECT_DATABASE_URL?.trim());
+    const prepare = resolvePrepare(url, { transactionPooled });
+    const timeouts = resolveSessionTimeouts({ transactionPooled });
     const opts: Record<string, unknown> = {
       max: resolvePoolSize(),
       idle_timeout: 20,
