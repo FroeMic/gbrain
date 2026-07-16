@@ -165,22 +165,23 @@ export class PostgresEngine implements BrainEngine {
     this._savedConfig = config;
     const url = config.database_url;
     if (config.poolSize) {
-      // Instance-level connection for worker isolation. resolvePoolSize lets
-      // GBRAIN_POOL_SIZE cap below the caller's requested size when set — the
-      // env var is a user escape hatch, so it wins.
+      // Instance-level connection for worker isolation. resolvePoolSize applies
+      // the hosted pool ceiling below the caller's requested size when set.
       const url = config.database_url;
       if (!url) throw new GBrainError('No database URL', 'database_url is missing', 'Provide --url');
-      const size = Math.min(config.poolSize, db.resolvePoolSize(config.poolSize));
+      const size = db.resolvePoolSize(config.poolSize);
       // Honor PgBouncer transaction-mode detection on worker-instance pools too.
       // Without this, `gbrain jobs work` against a Supabase pooler URL hits
       // "prepared statement does not exist" under load just like the module
       // singleton did before v0.15.4.
-      const prepare = db.resolvePrepare(url);
+      const transactionPooled = db.isTransactionPooledUrl(url) ||
+        Boolean(process.env.GBRAIN_DIRECT_DATABASE_URL?.trim());
+      const prepare = db.resolvePrepare(url, { transactionPooled });
       // Session timeouts (statement_timeout + idle_in_transaction_session_timeout)
       // keep orphan pgbouncer backends from holding locks for hours when the
       // postgres.js client disconnects mid-transaction. See resolveSessionTimeouts
       // in db.ts for context + env var overrides.
-      const timeouts = db.resolveSessionTimeouts();
+      const timeouts = db.resolveSessionTimeouts({ transactionPooled });
       const opts: Record<string, unknown> = {
         max: size,
         idle_timeout: 20,
@@ -283,9 +284,9 @@ export class PostgresEngine implements BrainEngine {
 
   async initSchema(): Promise<void> {
     // v0.30.1 (X1): route DDL through the direct pool when ConnectionManager
-    // is in dual-pool mode. The pooler's 2-min statement_timeout truncates
-    // SCHEMA_SQL replays + migrations on Supabase; the direct pool gets
-    // 30min. Lane B replaces the lock primitive with a TTL+heartbeat table
+    // is in dual-pool mode. The pooler's baseline query timeout truncates
+    // long SCHEMA_SQL replays + migrations; the direct pool gets 30min.
+    // Lane B replaces the lock primitive with a TTL+heartbeat table
     // lock; Lane A does the routing and keeps pg_advisory_lock(42) on the
     // SAME connection so the lock is correct.
     const conn = this.connectionManager

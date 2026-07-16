@@ -213,11 +213,16 @@ describe('Lane C.3 — env ZEROENTROPY_API_KEY merges into loadConfig', () => {
 // ─────────────────────────────────────────────────────────────────────
 describe('Lane D.2 — embed pre-flight catches dim mismatch before worker pool', () => {
   let engine: PGLiteEngine;
+  let tmpHome: string;
+  let origHome: string | undefined;
 
   // Fully self-contained: configure gateway EXPLICITLY so schema dim is
   // deterministic regardless of earlier tests' state. resetGateway() at
   // teardown so we don't poison downstream tests.
   beforeAll(async () => {
+    origHome = process.env.GBRAIN_HOME;
+    tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-v37-d2-'));
+    process.env.GBRAIN_HOME = tmpHome;
     configureGateway({
       embedding_model: 'openai:text-embedding-3-large',
       embedding_dimensions: 1536,
@@ -235,6 +240,9 @@ describe('Lane D.2 — embed pre-flight catches dim mismatch before worker pool'
   afterAll(async () => {
     await engine.disconnect();
     __setEmbedTransportForTests(null);
+    rmSync(tmpHome, { recursive: true, force: true });
+    if (origHome === undefined) delete process.env.GBRAIN_HOME;
+    else process.env.GBRAIN_HOME = origHome;
     configureGateway({
       embedding_model: 'openai:text-embedding-3-large',
       embedding_dimensions: 1536,

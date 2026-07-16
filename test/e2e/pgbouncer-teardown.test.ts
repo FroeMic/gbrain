@@ -145,4 +145,75 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
     expect(res.stdout).toContain(MARKER);
     expect(res.stderr).not.toMatch(/force-exiting/);
   }, 120_000);
+
+  test('hosted read-pool ceiling limits concurrent PgBouncer backends', async () => {
+    const originalPoolSize = process.env.GBRAIN_POOL_SIZE;
+    process.env.GBRAIN_POOL_SIZE = '2';
+    const pooled = new URL(POOLED_URL!);
+    pooled.pathname = `/${TEST_DB}`;
+    const engine = new PostgresEngine();
+    try {
+      // Request more than the hosted ceiling. If the worker-instance path
+      // bypasses resolvePoolSize, all eight transactions reach the pooler at
+      // once; with the policy, at most two backend queries are active.
+      await engine.connect({
+        engine: 'postgres',
+        database_url: pooled.toString(),
+        poolSize: 8,
+      });
+      const startedAt = performance.now();
+      const queries = Array.from({ length: 8 }, () =>
+        engine.sql.unsafe('SELECT pg_sleep(0.3)'),
+      );
+      await Promise.all(queries);
+      const elapsedMs = performance.now() - startedAt;
+      // Eight 300ms transactions take four waves through a two-connection
+      // client pool. An uncapped eight-connection pool finishes in one wave.
+      expect(elapsedMs).toBeGreaterThan(750);
+    } finally {
+      await engine.disconnect();
+      if (originalPoolSize === undefined) delete process.env.GBRAIN_POOL_SIZE;
+      else process.env.GBRAIN_POOL_SIZE = originalPoolSize;
+    }
+  }, 120_000);
+
+  test('pool-owned query and idle-transaction timeouts survive reassignment', async () => {
+    const pooled = new URL(POOLED_URL!);
+    pooled.pathname = `/${TEST_DB}`;
+    const poolUrl = pooled.toString();
+    // CI config sets PgBouncer query_timeout=1. Repeating after each
+    // cancellation proves the timeout is owned by the pooler, not a stale
+    // client session setting tied to one backend.
+    for (let i = 0; i < 2; i++) {
+      const pool = postgres(poolUrl, { max: 1, prepare: false });
+      try {
+        let queryError: unknown;
+        try {
+          await pool.unsafe('SELECT pg_sleep(2)');
+        } catch (error) {
+          queryError = error;
+        }
+        expect(String(queryError)).toMatch(/timeout|cancel|closed|terminat/i);
+      } finally {
+        await pool.end({ timeout: 5 });
+      }
+    }
+
+    const pool = postgres(poolUrl, { max: 1, prepare: false });
+    try {
+      let idleError: unknown;
+      try {
+        await pool.begin(async tx => {
+          await tx`SELECT 1`;
+          await new Promise(resolve => setTimeout(resolve, 1_500));
+          await tx`SELECT 1`;
+        });
+      } catch (error) {
+        idleError = error;
+      }
+      expect(String(idleError)).toMatch(/timeout|idle|closed|terminat/i);
+    } finally {
+      await pool.end({ timeout: 5 });
+    }
+  }, 120_000);
 });

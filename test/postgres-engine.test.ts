@@ -76,7 +76,9 @@ describe('postgres-engine / search path timeout isolation', () => {
     // simple enough that if `resolvePrepare` name appears and a conditional
     // `prepare` key appears in the options literal, the wire-up is live.
     const stripped = stripComments(SRC);
-    expect(stripped).toMatch(/db\.resolvePrepare\s*\(\s*url\s*\)/);
+    expect(stripped).toMatch(
+      /db\.resolvePrepare\s*\(\s*url\s*,\s*\{\s*transactionPooled\s*\}\s*\)/,
+    );
     expect(stripped).toMatch(/typeof\s+prepare\s*===\s*['"]boolean['"]/);
   });
 

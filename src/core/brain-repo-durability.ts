@@ -159,8 +159,9 @@ fi
 
 ${PUSH_RETRY}
 
-# Detach so the commit returns instantly; all output goes to the log.
-( brain_push "$_branch" ) </dev/null >/dev/null 2>&1 &
+# Detach so the commit returns instantly; ignore SIGHUP so a slow failed push
+# still reaches the LOCAL-ONLY log after the hook shell exits.
+( trap '' HUP; brain_push "$_branch" ) </dev/null >/dev/null 2>&1 &
 disown 2>/dev/null || true
 exit 0
 `;
@@ -678,10 +679,17 @@ function commitScaffolding(repoPath: string, branch: string, redact: (s: string)
       stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, env: { ...process.env, ...GIT_ENV },
     }).toString().trim();
     if (!staged) return { status: 'ok', detail: 'scaffolding already committed' };
-    execFileSync('git', ['-C', repoPath, 'commit', '-m', 'chore(gbrain): install brain durability scaffolding'], {
+    execFileSync('git', ['-C', repoPath, '-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '-m', 'chore(gbrain): install brain durability scaffolding'], {
       stdio: 'ignore', timeout: 30_000, env: { ...process.env, ...GIT_ENV },
     });
-    execFileSync('git', ['-C', repoPath, ...['-c', 'http.followRedirects=false'], 'push', 'origin', `HEAD:${branch}`], {
+    const fileAllow = process.env.GBRAIN_GIT_ALLOW_FILE_TRANSPORT === '1' ? 'always' : 'never';
+    execFileSync('git', [
+      '-C', repoPath,
+      '-c', 'http.followRedirects=false',
+      '-c', `protocol.file.allow=${fileAllow}`,
+      '-c', 'protocol.ext.allow=never',
+      'push', 'origin', `HEAD:${branch}`,
+    ], {
       stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000, env: { ...process.env, ...GIT_ENV_AUTH },
     });
     return { status: 'fixed', detail: 'committed + pushed durability scaffolding' };

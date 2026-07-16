@@ -123,9 +123,12 @@ describe('resolveDirectPoolSize', () => {
     expect(DEFAULT_DIRECT_POOL_SIZE).toBe(3);
   });
 
-  test('explicit overrides env', () => {
+  test('explicit request cannot exceed the direct-pool env cap', () => {
     process.env.GBRAIN_DIRECT_POOL_SIZE = '5';
-    expect(resolveDirectPoolSize(7)).toBe(7);
+    expect(resolveDirectPoolSize(7)).toBe(5);
+    expect(resolveDirectPoolSize(3)).toBe(3);
+    process.env.GBRAIN_DIRECT_POOL_SIZE = '999';
+    expect(resolveDirectPoolSize(50)).toBe(20);
   });
 
   test('env overrides default', () => {
@@ -159,6 +162,7 @@ describe('ConnectionManager — describeMode + dual-pool routing', () => {
     expect(cm.isSupabase()).toBe(false);
     expect(cm.isDualPoolActive()).toBe(false);
     expect(cm.describeMode().mode).toBe('single (non-supabase)');
+    expect(cm.describeMode().direct_url_source).toBe('none');
   });
 
   test('Supabase pooler URL → dual mode (without kill-switch)', () => {
@@ -168,7 +172,43 @@ describe('ConnectionManager — describeMode + dual-pool routing', () => {
     expect(cm.isSupabase()).toBe(true);
     expect(cm.isDualPoolActive()).toBe(true);
     expect(cm.describeMode().mode).toBe('split');
+    expect(cm.describeMode().direct_url_source).toBe('inferred');
     expect(cm.describeMode().direct_host).toContain('db.abc.supabase.co:5432');
+  });
+
+  test('generic primary URL plus explicit direct URL activates split mode', () => {
+    const cm = new ConnectionManager({
+      url: 'postgresql://brain:secret@pool.monodrive.internal:6432/brain',
+      directUrl: 'postgresql://brain:secret@rds.internal:5432/brain',
+    });
+    expect(cm.isSupabase()).toBe(false);
+    expect(cm.isDualPoolActive()).toBe(true);
+    expect(cm.describeMode()).toMatchObject({
+      mode: 'split',
+      direct_url_source: 'explicit',
+      read_prepare: false,
+      read_pool_size: 10,
+      direct_pool_size: 3,
+    });
+    expect(cm.describeMode().direct_host).toBe('rds.internal:5432');
+  });
+
+  test('explicit direct URL from the environment activates generic split mode', () => {
+    const original = process.env.GBRAIN_DIRECT_DATABASE_URL;
+    try {
+      process.env.GBRAIN_DIRECT_DATABASE_URL = 'postgresql://brain:secret@rds.internal:5432/brain';
+      const cm = new ConnectionManager({
+        url: 'postgresql://brain:secret@pool.monodrive.internal:6432/brain',
+      });
+      expect(cm.isDualPoolActive()).toBe(true);
+      expect(cm.describeMode()).toMatchObject({
+        mode: 'split',
+        direct_url_source: 'explicit',
+      });
+    } finally {
+      if (original === undefined) delete process.env.GBRAIN_DIRECT_DATABASE_URL;
+      else process.env.GBRAIN_DIRECT_DATABASE_URL = original;
+    }
   });
 
   test('kill-switch active → single mode (kill-switch)', () => {
@@ -180,6 +220,21 @@ describe('ConnectionManager — describeMode + dual-pool routing', () => {
     expect(cm.isKillSwitchActive()).toBe(true);
     expect(cm.isDualPoolActive()).toBe(false);
     expect(cm.describeMode().mode).toBe('single (kill-switch)');
+    expect(cm.describeMode().direct_url_source).toBe('inferred');
+  });
+
+  test('kill-switch keeps explicit generic routing disabled and diagnosed', () => {
+    process.env.GBRAIN_DISABLE_DIRECT_POOL = '1';
+    const cm = new ConnectionManager({
+      url: 'postgresql://brain:secret@pool.monodrive.internal:6432/brain',
+      directUrl: 'postgresql://brain:secret@rds.internal:5432/brain',
+    });
+    expect(cm.isDualPoolActive()).toBe(false);
+    expect(cm.describeMode()).toMatchObject({
+      mode: 'single (kill-switch)',
+      direct_url_source: 'explicit',
+      kill_switch_active: true,
+    });
   });
 
   test('explicit directUrl override wins', () => {

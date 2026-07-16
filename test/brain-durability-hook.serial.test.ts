@@ -110,7 +110,12 @@ describe('post-commit hook (D9 local, D7 self-contained)', () => {
   test('logs a clear LOCAL-ONLY line when origin is unreachable', async () => {
     git(work, 'remote', 'set-url', 'origin', join(root, 'gone2.git'));
     writeFileSync(join(work, 'orphan.md'), 'o\n');
-    git(work, 'add', 'orphan.md'); git(work, 'commit', '-qm', 'orphan');
+    execFileSync('git', ['-c', 'protocol.file.allow=always', 'add', 'orphan.md'], {
+      cwd: work, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
+    });
+    execFileSync('git', ['-c', 'protocol.file.allow=always', 'commit', '-qm', 'orphan'], {
+      cwd: work, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
+    });
     const log = join(process.env.GBRAIN_HOME!, 'brain-push.log');
     const deadline = Date.now() + 8000;
     let found = false;

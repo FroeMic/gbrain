@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect, afterEach } from 'bun:test';
-import { resolvePrepare } from '../src/core/db.ts';
+import { isTransactionPooledUrl, resolvePrepare } from '../src/core/db.ts';
 
 describe('resolvePrepare', () => {
   afterEach(() => {
@@ -22,8 +22,21 @@ describe('resolvePrepare', () => {
     expect(resolvePrepare('postgresql://user:pass@host:6543/db')).toBe(false);
   });
 
+  test('recognizes the hosted PgBouncer port 6432', () => {
+    expect(isTransactionPooledUrl('postgresql://user:pass@host:6432/db')).toBe(true);
+    expect(isTransactionPooledUrl('postgresql://user:pass@host:5432/db')).toBe(false);
+  });
+
   test('returns undefined for direct Postgres port 5432', () => {
     expect(resolvePrepare('postgresql://user:pass@host:5432/db')).toBeUndefined();
+  });
+
+  test('disables prepares for a generic transaction-pooled route', () => {
+    expect(
+      resolvePrepare('postgresql://user:pass@pool.monodrive.internal:6432/db', {
+        transactionPooled: true,
+      }),
+    ).toBe(false);
   });
 
   test('returns undefined for default port (no port specified)', () => {

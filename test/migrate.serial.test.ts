@@ -1059,11 +1059,14 @@ describe('resolvePoolSize — env var + explicit override', () => {
     expect(resolvePoolSize()).toBe(10);
   });
 
-  test('explicit argument wins over env + default', () => {
+  test('explicit argument may request fewer connections but cannot exceed the env cap', () => {
     delete process.env.GBRAIN_POOL_SIZE;
     expect(resolvePoolSize(3)).toBe(3);
+    process.env.GBRAIN_POOL_SIZE = '2';
+    expect(resolvePoolSize(3)).toBe(2);
     process.env.GBRAIN_POOL_SIZE = '7';
     expect(resolvePoolSize(3)).toBe(3);
+    expect(resolvePoolSize(9)).toBe(7);
   });
 });
 
@@ -1218,12 +1221,12 @@ describe('PR #356 — apply-migrations pre-flight schema-version warning', () =>
   });
 });
 
-describe('PR #356 + #363 — session timeouts applied via startup parameters', () => {
+describe('PR #356 + #363 — direct session timeouts and pooled timeout ownership', () => {
   test('structural: setSessionDefaults exists for back-compat; resolveSessionTimeouts is the source of truth', () => {
     // PR #356 introduced setSessionDefaults (post-pool SET).
-    // PR #363 superseded it with resolveSessionTimeouts (startup parameters,
-    // PgBouncer-transaction-mode-safe). The setSessionDefaults function is
-    // kept as a no-op shim for back-compat with existing call sites.
+    // PR #363 superseded it with resolveSessionTimeouts (startup parameters for
+    // direct connections). Pooled routes use the PgBouncer timeout owner. The
+    // setSessionDefaults function is kept as a no-op shim for back-compat.
     const dbSrc = readFileSync(resolve('src/core/db.ts'), 'utf-8');
     const pgSrc = readFileSync(resolve('src/core/postgres-engine.ts'), 'utf-8');
 
@@ -1233,18 +1236,19 @@ describe('PR #356 + #363 — session timeouts applied via startup parameters', (
     expect(dbSrc).toContain('export function resolveSessionTimeouts');
     expect(dbSrc).toContain('idle_in_transaction_session_timeout');
 
-    // Both connect paths call resolveSessionTimeouts() and feed it through
-    // postgres.js's connection option (startup parameters)
-    expect(dbSrc).toContain('resolveSessionTimeouts()');
-    expect(pgSrc).toContain('resolveSessionTimeouts()');
+    // Both connect paths resolve session settings before feeding them through
+    // postgres.js's connection option; pooled routes intentionally resolve {}.
+    expect(dbSrc).toContain('resolveSessionTimeouts({ transactionPooled });');
+    expect(pgSrc).toContain('resolveSessionTimeouts({ transactionPooled });');
 
     // setSessionDefaults still callable (no-op) so existing call sites
     // don't break, but the SET command itself is gone — the work has
     // already happened at connection startup time.
     expect(pgSrc).toContain('db.setSessionDefaults');
 
-    // Critically: no SET idle_in_transaction in source — startup parameters
-    // are the durable mechanism for PgBouncer transaction mode.
+    // Critically: no SET idle_in_transaction in source — pooled timeout
+    // ownership belongs to PgBouncer, while direct connections use startup
+    // parameters.
     const setMatches = dbSrc.match(/SET idle_in_transaction_session_timeout/g) || [];
     expect(setMatches.length).toBe(0);
   });
@@ -1608,6 +1612,14 @@ describe('resolveSessionTimeouts — env var overrides', () => {
     process.env.GBRAIN_IDLE_TX_TIMEOUT = 'off';
     const t = resolveSessionTimeouts();
     expect(Object.keys(t)).toHaveLength(0);
+  });
+
+  test('pooled routes omit unsupported startup timeout parameters', () => {
+    resetEnv();
+    process.env.GBRAIN_STATEMENT_TIMEOUT = '10s';
+    process.env.GBRAIN_IDLE_TX_TIMEOUT = '10s';
+    process.env.GBRAIN_CLIENT_CHECK_INTERVAL = '15s';
+    expect(resolveSessionTimeouts({ transactionPooled: true })).toEqual({});
   });
 });
 

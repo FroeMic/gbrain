@@ -3,8 +3,8 @@
  *
  * Three pools, one decision: read() goes to the pooler (port 6543, fast,
  * many connections); ddl() and bulk() go to a direct connection (port 5432,
- * 30min statement_timeout, capped at 3 conns) so DDL doesn't time out on
- * the Supabase pooler's 2-min statement_timeout.
+ * 30min statement_timeout, capped at 3 conns) so DDL does not inherit the
+ * pooled endpoint's shorter query timeout.
  *
  * The connection-manager is the URL-routing layer. It layers on top of
  * postgres.js's existing pool primitives + PostgresEngine.withReservedConnection.
@@ -14,7 +14,7 @@
  *   │ (pooler, port 6543)         │
  *   └────────┬────────────────────┘
  *            │
- *            ▼ auto-detect Supabase
+ *            ▼ explicit direct URL or auto-detect Supabase
  *   ┌──────────────┐    ┌──────────────┐
  *   │  read pool   │    │ direct pool  │
  *   │  size 10     │    │ size 3       │
@@ -33,11 +33,12 @@
  *    legacy path. With parent set, inherit parent's kill-switch state (A2).
  *  - Audit (F8): every acquire/release/error logs to connection-events.jsonl.
  *  - Non-Supabase passthrough: if URL isn't a Supabase pooler and no
- *    GBRAIN_DIRECT_DATABASE_URL override, ddl()/bulk() share the read pool.
+ *    GBRAIN_DIRECT_DATABASE_URL override is supplied, ddl()/bulk() share the
+ *    read pool. An explicit direct URL enables split routing for any host.
  */
 
 import postgres from 'postgres';
-import { resolvePrepare, resolveSessionTimeouts, resolvePoolSize, endPoolBounded } from './db.ts';
+import { isTransactionPooledUrl, resolvePrepare, resolveSessionTimeouts, resolvePoolSize, endPoolBounded } from './db.ts';
 import { redactPgUrl } from './url-redact.ts';
 import { logConnectionEvent } from './connection-audit.ts';
 
@@ -72,6 +73,8 @@ export interface ConnectionManagerOpts {
    */
   readPoolOwnedExternally?: boolean;
 }
+
+export type DirectUrlSource = 'explicit' | 'inferred' | 'none';
 
 /** Default direct-pool size (P1 raised from 2 to 3). Override via env. */
 export const DEFAULT_DIRECT_POOL_SIZE = 3;
@@ -176,16 +179,23 @@ export function readKillSwitchEnv(): boolean {
     process.env.GBRAIN_DISABLE_DIRECT_POOL === 'true';
 }
 
+const MAX_DIRECT_POOL_SIZE = 20;
+
 /**
- * Resolve direct pool size: explicit > env > default.
+ * Resolve direct pool size. The environment value is a hard ceiling over an
+ * explicit request, independently from the read-pool ceiling.
  */
 export function resolveDirectPoolSize(explicit?: number): number {
-  if (typeof explicit === 'number' && explicit > 0) return explicit;
   const raw = process.env.GBRAIN_DIRECT_POOL_SIZE;
+  let cap: number | undefined;
   if (raw) {
     const parsed = parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed > 0 && parsed <= 20) return parsed;
+    if (Number.isFinite(parsed) && parsed > 0 && parsed <= MAX_DIRECT_POOL_SIZE) cap = parsed;
   }
+  if (typeof explicit === 'number' && explicit > 0) {
+    return Math.min(explicit, cap ?? MAX_DIRECT_POOL_SIZE);
+  }
+  if (cap !== undefined) return cap;
   return DEFAULT_DIRECT_POOL_SIZE;
 }
 
@@ -197,6 +207,7 @@ export class ConnectionManager {
   private _directPool: Sql | null = null;
   private _killSwitch: boolean;
   private _directUrl: string | null;
+  private _directUrlSource: DirectUrlSource;
   private _isSupabase: boolean;
 
   constructor(opts: ConnectionManagerOpts) {
@@ -208,6 +219,7 @@ export class ConnectionManager {
       this._killSwitch = opts.parent.isKillSwitchActive();
       this._isSupabase = opts.parent.isSupabase();
       this._directUrl = opts.parent.resolveDirectUrl();
+      this._directUrlSource = opts.parent.directUrlSource();
       this._readPool = opts.parent.peekReadPool();
       this._readPoolOwnedExternally = true; // never end the parent's pool
     } else {
@@ -215,18 +227,26 @@ export class ConnectionManager {
       this._isSupabase = isSupabasePoolerUrl(opts.url);
       // Direct URL: explicit override > env > derive > null
       const envOverride = process.env.GBRAIN_DIRECT_DATABASE_URL;
-      this._directUrl = opts.directUrl ?? envOverride ?? deriveDirectUrl(opts.url);
+      const explicitUrl = opts.directUrl ?? envOverride;
+      if (explicitUrl !== undefined && explicitUrl !== null) {
+        this._directUrl = explicitUrl || null;
+        this._directUrlSource = explicitUrl ? 'explicit' : 'none';
+      } else {
+        this._directUrl = deriveDirectUrl(opts.url);
+        this._directUrlSource = this._directUrl ? 'inferred' : 'none';
+      }
     }
   }
 
-  /** Whether dual-pool routing is active (false on non-Supabase or kill-switch). */
+  /** Whether dual-pool routing is active (false only without a direct route or on kill-switch). */
   isDualPoolActive(): boolean {
-    return this._isSupabase && !this._killSwitch && !!this._directUrl;
+    return !this._killSwitch && !!this._directUrl;
   }
 
   isSupabase(): boolean { return this._isSupabase; }
   isKillSwitchActive(): boolean { return this._killSwitch; }
   resolveDirectUrl(): string | null { return this._directUrl; }
+  directUrlSource(): DirectUrlSource { return this._directUrlSource; }
 
   /**
    * Internal: peek at the read pool without forcing init. Used by parent
@@ -258,9 +278,10 @@ export class ConnectionManager {
       connect_timeout: 10,
       types: { bigint: postgres.BigInt },
     };
-    const timeouts = resolveSessionTimeouts();
+    const transactionPooled = isTransactionPooledUrl(this.opts.url) || Boolean(this._directUrl);
+    const timeouts = resolveSessionTimeouts({ transactionPooled });
     if (Object.keys(timeouts).length > 0) opts.connection = timeouts;
-    const prepare = resolvePrepare(this.opts.url);
+    const prepare = resolvePrepare(this.opts.url, { transactionPooled });
     if (typeof prepare === 'boolean') opts.prepare = prepare;
     this._readPool = postgres(this.opts.url, opts);
     logConnectionEvent({ pool: 'read', op: 'init' });
@@ -422,19 +443,28 @@ export class ConnectionManager {
    */
   describeMode(): {
     mode: 'split' | 'single (kill-switch)' | 'single (non-supabase)' | 'single (no-direct-url)';
+    direct_url_source: DirectUrlSource;
     direct_host?: string;
     kill_switch_active: boolean;
+    read_pool_size: number;
+    read_prepare: boolean | 'default';
     direct_pool_size: number;
   } {
     let mode: 'split' | 'single (kill-switch)' | 'single (non-supabase)' | 'single (no-direct-url)';
-    if (!this._isSupabase) mode = 'single (non-supabase)';
-    else if (this._killSwitch) mode = 'single (kill-switch)';
+    if (this._killSwitch) mode = 'single (kill-switch)';
+    else if (this.isDualPoolActive()) mode = 'split';
+    else if (!this._isSupabase) mode = 'single (non-supabase)';
     else if (!this._directUrl) mode = 'single (no-direct-url)';
     else mode = 'split';
     return {
       mode,
+      direct_url_source: this._directUrlSource,
       direct_host: this._directUrl ? this.hostOnly(this._directUrl) : undefined,
       kill_switch_active: this._killSwitch,
+      read_pool_size: resolvePoolSize(this.opts.readPoolSize),
+      read_prepare: resolvePrepare(this.opts.url, {
+        transactionPooled: isTransactionPooledUrl(this.opts.url) || Boolean(this._directUrl),
+      }) ?? 'default',
       direct_pool_size: resolveDirectPoolSize(this.opts.directPoolSize),
     };
   }

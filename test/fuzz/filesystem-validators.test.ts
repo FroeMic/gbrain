@@ -75,7 +75,7 @@ describe('validateUploadPath fuzz (fs-backed)', () => {
       fc.property(traversalProbe, (probe) => {
         let threw = false;
         try {
-          validateUploadPath(confinementDir, probe);
+          validateUploadPath(join(confinementDir, probe), confinementDir);
         } catch {
           threw = true;
         }
