@@ -145,4 +145,35 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
     expect(res.stdout).toContain(MARKER);
     expect(res.stderr).not.toMatch(/force-exiting/);
   }, 120_000);
+
+  test('hosted read-pool ceiling limits concurrent PgBouncer backends', async () => {
+    const originalPoolSize = process.env.GBRAIN_POOL_SIZE;
+    process.env.GBRAIN_POOL_SIZE = '2';
+    const pooled = new URL(POOLED_URL!);
+    pooled.pathname = `/${TEST_DB}`;
+    const engine = new PostgresEngine();
+    try {
+      // Request more than the hosted ceiling. If the worker-instance path
+      // bypasses resolvePoolSize, all eight transactions reach the pooler at
+      // once; with the policy, at most two backend queries are active.
+      await engine.connect({
+        engine: 'postgres',
+        database_url: pooled.toString(),
+        poolSize: 8,
+      });
+      const startedAt = performance.now();
+      const queries = Array.from({ length: 8 }, () =>
+        engine.sql.unsafe('SELECT pg_sleep(0.3)'),
+      );
+      await Promise.all(queries);
+      const elapsedMs = performance.now() - startedAt;
+      // Eight 300ms transactions take four waves through a two-connection
+      // client pool. An uncapped eight-connection pool finishes in one wave.
+      expect(elapsedMs).toBeGreaterThan(750);
+    } finally {
+      await engine.disconnect();
+      if (originalPoolSize === undefined) delete process.env.GBRAIN_POOL_SIZE;
+      else process.env.GBRAIN_POOL_SIZE = originalPoolSize;
+    }
+  }, 120_000);
 });

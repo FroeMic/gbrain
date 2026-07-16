@@ -179,16 +179,23 @@ export function readKillSwitchEnv(): boolean {
     process.env.GBRAIN_DISABLE_DIRECT_POOL === 'true';
 }
 
+const MAX_DIRECT_POOL_SIZE = 20;
+
 /**
- * Resolve direct pool size: explicit > env > default.
+ * Resolve direct pool size. The environment value is a hard ceiling over an
+ * explicit request, independently from the read-pool ceiling.
  */
 export function resolveDirectPoolSize(explicit?: number): number {
-  if (typeof explicit === 'number' && explicit > 0) return explicit;
   const raw = process.env.GBRAIN_DIRECT_POOL_SIZE;
+  let cap: number | undefined;
   if (raw) {
     const parsed = parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed > 0 && parsed <= 20) return parsed;
+    if (Number.isFinite(parsed) && parsed > 0 && parsed <= MAX_DIRECT_POOL_SIZE) cap = parsed;
   }
+  if (typeof explicit === 'number' && explicit > 0) {
+    return Math.min(explicit, cap ?? MAX_DIRECT_POOL_SIZE);
+  }
+  if (cap !== undefined) return cap;
   return DEFAULT_DIRECT_POOL_SIZE;
 }
 
@@ -273,7 +280,9 @@ export class ConnectionManager {
     };
     const timeouts = resolveSessionTimeouts();
     if (Object.keys(timeouts).length > 0) opts.connection = timeouts;
-    const prepare = resolvePrepare(this.opts.url);
+    const prepare = resolvePrepare(this.opts.url, {
+      transactionPooled: Boolean(this._directUrl),
+    });
     if (typeof prepare === 'boolean') opts.prepare = prepare;
     this._readPool = postgres(this.opts.url, opts);
     logConnectionEvent({ pool: 'read', op: 'init' });
@@ -438,6 +447,8 @@ export class ConnectionManager {
     direct_url_source: DirectUrlSource;
     direct_host?: string;
     kill_switch_active: boolean;
+    read_pool_size: number;
+    read_prepare: boolean | 'default';
     direct_pool_size: number;
   } {
     let mode: 'split' | 'single (kill-switch)' | 'single (non-supabase)' | 'single (no-direct-url)';
@@ -451,6 +462,10 @@ export class ConnectionManager {
       direct_url_source: this._directUrlSource,
       direct_host: this._directUrl ? this.hostOnly(this._directUrl) : undefined,
       kill_switch_active: this._killSwitch,
+      read_pool_size: resolvePoolSize(this.opts.readPoolSize),
+      read_prepare: resolvePrepare(this.opts.url, {
+        transactionPooled: Boolean(this._directUrl),
+      }) ?? 'default',
       direct_pool_size: resolveDirectPoolSize(this.opts.directPoolSize),
     };
   }

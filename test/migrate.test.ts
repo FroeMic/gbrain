@@ -1059,11 +1059,14 @@ describe('resolvePoolSize — env var + explicit override', () => {
     expect(resolvePoolSize()).toBe(10);
   });
 
-  test('explicit argument wins over env + default', () => {
+  test('explicit argument may request fewer connections but cannot exceed the env cap', () => {
     delete process.env.GBRAIN_POOL_SIZE;
     expect(resolvePoolSize(3)).toBe(3);
+    process.env.GBRAIN_POOL_SIZE = '2';
+    expect(resolvePoolSize(3)).toBe(2);
     process.env.GBRAIN_POOL_SIZE = '7';
     expect(resolvePoolSize(3)).toBe(3);
+    expect(resolvePoolSize(9)).toBe(7);
   });
 });
 

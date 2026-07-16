@@ -26,6 +26,14 @@ describe('resolvePrepare', () => {
     expect(resolvePrepare('postgresql://user:pass@host:5432/db')).toBeUndefined();
   });
 
+  test('disables prepares for a generic transaction-pooled route', () => {
+    expect(
+      resolvePrepare('postgresql://user:pass@pool.monodrive.internal:6432/db', {
+        transactionPooled: true,
+      }),
+    ).toBe(false);
+  });
+
   test('returns undefined for default port (no port specified)', () => {
     expect(resolvePrepare('postgresql://user:pass@host/db')).toBeUndefined();
   });

@@ -123,9 +123,12 @@ describe('resolveDirectPoolSize', () => {
     expect(DEFAULT_DIRECT_POOL_SIZE).toBe(3);
   });
 
-  test('explicit overrides env', () => {
+  test('explicit request cannot exceed the direct-pool env cap', () => {
     process.env.GBRAIN_DIRECT_POOL_SIZE = '5';
-    expect(resolveDirectPoolSize(7)).toBe(7);
+    expect(resolveDirectPoolSize(7)).toBe(5);
+    expect(resolveDirectPoolSize(3)).toBe(3);
+    process.env.GBRAIN_DIRECT_POOL_SIZE = '999';
+    expect(resolveDirectPoolSize(50)).toBe(20);
   });
 
   test('env overrides default', () => {
@@ -183,6 +186,9 @@ describe('ConnectionManager — describeMode + dual-pool routing', () => {
     expect(cm.describeMode()).toMatchObject({
       mode: 'split',
       direct_url_source: 'explicit',
+      read_prepare: false,
+      read_pool_size: 10,
+      direct_pool_size: 3,
     });
     expect(cm.describeMode().direct_host).toBe('rds.internal:5432');
   });

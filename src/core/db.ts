@@ -77,14 +77,22 @@ const AUTO_DETECT_PORTS = new Set(['6543']);
  * Precedence:
  *   1. `GBRAIN_PREPARE` env var (`true`/`1` or `false`/`0`)
  *   2. `?prepare=true|false` query param on the URL
- *   3. Auto-detect: port 6543 → `false`
- *   4. Default: `undefined` (caller omits the option; postgres.js default stands)
+ *   3. Explicit transaction-pooled route → `false`
+ *   4. Auto-detect: port 6543 → `false`
+ *   5. Default: `undefined` (caller omits the option; postgres.js default stands)
  *
  * Returns `boolean | undefined`. `undefined` is meaningful — callers MUST
  * omit the `prepare` key entirely in that case rather than passing
  * `undefined` through to `postgres(url, {prepare: undefined})`.
  */
-export function resolvePrepare(url: string): boolean | undefined {
+export type PrepareResolutionOptions = {
+  transactionPooled?: boolean;
+};
+
+export function resolvePrepare(
+  url: string,
+  options: PrepareResolutionOptions = {},
+): boolean | undefined {
   const envPrepare = process.env.GBRAIN_PREPARE;
   if (envPrepare === 'false' || envPrepare === '0') return false;
   if (envPrepare === 'true' || envPrepare === '1') return true;
@@ -94,6 +102,8 @@ export function resolvePrepare(url: string): boolean | undefined {
     const urlPrepare = parsed.searchParams.get('prepare');
     if (urlPrepare === 'false') return false;
     if (urlPrepare === 'true') return true;
+
+    if (options.transactionPooled) return false;
 
     if (AUTO_DETECT_PORTS.has(parsed.port)) {
       return false;
@@ -106,12 +116,16 @@ export function resolvePrepare(url: string): boolean | undefined {
 }
 
 export function resolvePoolSize(explicit?: number): number {
-  if (typeof explicit === 'number' && explicit > 0) return explicit;
   const raw = process.env.GBRAIN_POOL_SIZE;
+  let cap: number | undefined;
   if (raw) {
     const parsed = parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    if (Number.isFinite(parsed) && parsed > 0) cap = parsed;
   }
+  if (typeof explicit === 'number' && explicit > 0) {
+    return cap === undefined ? explicit : Math.min(explicit, cap);
+  }
+  if (cap !== undefined) return cap;
   return DEFAULT_POOL_SIZE_FALLBACK;
 }
 
@@ -235,7 +249,9 @@ export async function connect(config: EngineConfig): Promise<boolean> {
 
   try {
     const connectionStartedAt = performance.now();
-    const prepare = resolvePrepare(url);
+    const prepare = resolvePrepare(url, {
+      transactionPooled: Boolean(process.env.GBRAIN_DIRECT_DATABASE_URL?.trim()),
+    });
     const timeouts = resolveSessionTimeouts();
     const opts: Record<string, unknown> = {
       max: resolvePoolSize(),
