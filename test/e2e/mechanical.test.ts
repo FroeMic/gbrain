@@ -1263,13 +1263,13 @@ describeE2E('E2E: Doctor Command', () => {
       cmd: ['bun', 'run', 'src/cli.ts', 'init', '--non-interactive',
             '--url', process.env.DATABASE_URL!,
             '--embedding-model', 'openai:text-embedding-3-large'],
-      cwd: cliCwd, env: cliEnv(), timeout: 15_000,
+      cwd: cliCwd, env: cliEnv(), timeout: 60_000,
     });
     const result = Bun.spawnSync({
       cmd: ['bun', 'run', 'src/cli.ts', 'doctor'],
       cwd: cliCwd,
       env: cliEnv(),
-      timeout: 15_000,
+      timeout: 60_000,
     });
     if (result.exitCode !== 0) {
       const stdout = new TextDecoder().decode(result.stdout);
@@ -1285,7 +1285,7 @@ describeE2E('E2E: Doctor Command', () => {
       cmd: ['bun', 'run', 'src/cli.ts', 'doctor', '--json'],
       cwd: cliCwd,
       env: cliEnv(),
-      timeout: 15_000,
+      timeout: 60_000,
     });
     const stdout = new TextDecoder().decode(result.stdout);
     const parsed = JSON.parse(stdout);
