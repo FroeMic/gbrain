@@ -48,6 +48,13 @@ function directTestDbUrl(): string {
   return u.toString();
 }
 
+/** Pooled URL pointing at the dedicated test database. */
+function pooledTestDbUrl(): string {
+  const u = new URL(POOLED_URL!);
+  u.pathname = `/${TEST_DB}`;
+  return u.toString();
+}
+
 async function runCli(
   args: string[],
   env: Record<string, string>,
@@ -118,7 +125,18 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
   });
 
   test('op against the pooled URL exits clean — output intact, no force-exit banner', async () => {
-    const env = { HOME: home, GBRAIN_HOME: home };
+    const env = {
+      HOME: home,
+      GBRAIN_HOME: home,
+      // ci-local also supplies DATABASE_URL for the shard database. The
+      // namespaced override must win so this test stays on its dedicated
+      // transaction-pooled database.
+      GBRAIN_DATABASE_URL: pooledTestDbUrl(),
+      // The test creates a dedicated database after beforeAll starts. Keep
+      // the runtime's direct route on that database rather than the admin URL
+      // used only for CREATE DATABASE.
+      GBRAIN_DIRECT_DATABASE_URL: directTestDbUrl(),
+    };
     const res = await runCli(['get', SLUG], env, 90_000);
 
     if (res.exitCode !== 0 || /force-exiting/.test(res.stderr)) {
@@ -139,7 +157,12 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
   }, 120_000);
 
   test('second run (warm schema probe) also exits clean through the pooler', async () => {
-    const env = { HOME: home, GBRAIN_HOME: home };
+    const env = {
+      HOME: home,
+      GBRAIN_HOME: home,
+      GBRAIN_DATABASE_URL: pooledTestDbUrl(),
+      GBRAIN_DIRECT_DATABASE_URL: directTestDbUrl(),
+    };
     const res = await runCli(['get', SLUG], env, 90_000);
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toContain(MARKER);
@@ -148,7 +171,9 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
 
   test('hosted read-pool ceiling limits concurrent PgBouncer backends', async () => {
     const originalPoolSize = process.env.GBRAIN_POOL_SIZE;
+    const originalDirectUrl = process.env.GBRAIN_DIRECT_DATABASE_URL;
     process.env.GBRAIN_POOL_SIZE = '2';
+    process.env.GBRAIN_DIRECT_DATABASE_URL = directTestDbUrl();
     const pooled = new URL(POOLED_URL!);
     pooled.pathname = `/${TEST_DB}`;
     const engine = new PostgresEngine();
@@ -174,6 +199,8 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
       await engine.disconnect();
       if (originalPoolSize === undefined) delete process.env.GBRAIN_POOL_SIZE;
       else process.env.GBRAIN_POOL_SIZE = originalPoolSize;
+      if (originalDirectUrl === undefined) delete process.env.GBRAIN_DIRECT_DATABASE_URL;
+      else process.env.GBRAIN_DIRECT_DATABASE_URL = originalDirectUrl;
     }
   }, 120_000);
 
