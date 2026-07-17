@@ -115,7 +115,7 @@ describeE2E('v0.41.6.0 — sync lock recovery scenarios', () => {
     expect(handle).not.toBeNull();
 
     try {
-      const result = runCli(['sync', '--repo', repoDir, '--full', '--yes']);
+      const result = runCli(['sync', '--repo', repoDir, '--source', 'default', '--full', '--yes', '--no-embed']);
       expect(result.code).not.toBe(0);
       const msg = result.stderr + result.stdout;
       expect(msg).toMatch(new RegExp(`pid ${process.pid}`));
@@ -193,6 +193,11 @@ describeE2E('v0.41.6.0 — sync lock recovery scenarios', () => {
       } as Record<string, string>,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    // Register the exit promise before polling. A tiny no-embed sync can
+    // finish before the lock row is visible to this process; attaching the
+    // listener only after polling would then wait forever for an event that
+    // already fired.
+    const exited = new Promise<void>((resolve) => sigtermProc.once('exit', () => resolve()));
 
     // Wait up to 5s for the lock row to appear, then SIGTERM.
     let lockSeen = false;
@@ -204,13 +209,13 @@ describeE2E('v0.41.6.0 — sync lock recovery scenarios', () => {
     if (!lockSeen) {
       // Sync may have completed before we caught the lock. That's also fine.
       sigtermProc.kill('SIGTERM');
-      await new Promise(r => sigtermProc.on('exit', r));
+      await exited;
       // Skip the rest of the assertion.
       return;
     }
 
     sigtermProc.kill('SIGTERM');
-    await new Promise(r => sigtermProc.on('exit', r));
+    await exited;
 
     // Within 3s of exit, lock should be gone.
     let lockGone = false;
