@@ -52,6 +52,10 @@ const ALL_TABLES = [
   // v0.43 (#2095): volunteered-context feedback log — no FK to pages (slug
   // join), but stale rows poison stats/count assertions across runs.
   'context_volunteer_events',
+  // Sources own page foreign keys and are persistent across CI volume reuse.
+  // Reset them here so per-file tests never inherit local_path/sync metadata
+  // from a prior file or run.
+  'sources',
   'pages',       // last because of foreign keys
   'config',
   'minion_attachments',
@@ -99,6 +103,11 @@ export async function setupDB(): Promise<PostgresEngine> {
   await conn.unsafe(`
     INSERT INTO config (key, value) VALUES ('schema_version', '1')
     ON CONFLICT (key) DO NOTHING
+  `);
+  await conn.unsafe(`
+    INSERT INTO sources (id, name, config)
+    VALUES ('default', 'default', '{"federated": true}'::jsonb)
+    ON CONFLICT (id) DO NOTHING
   `);
 
   engine = new PostgresEngine();
