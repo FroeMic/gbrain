@@ -30,6 +30,8 @@ import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import postgres from 'postgres';
 import { PostgresEngine } from '../../src/core/postgres-engine.ts';
+import { MinionQueue } from '../../src/core/minions/queue.ts';
+import { hybridSearch } from '../../src/core/search/hybrid.ts';
 
 const POOLED_URL = process.env.GBRAIN_PGBOUNCER_URL;
 const DIRECT_ADMIN_URL = process.env.GBRAIN_PGBOUNCER_DIRECT_URL;
@@ -98,9 +100,21 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
 
     // Schema + fixture via the direct connection (DDL stays off the pooler,
     // matching the production split-pool discipline).
+    const initializeDirectSchema = async () => {
+      const engine = new PostgresEngine();
+      await engine.connect({ engine: 'postgres', database_url: directTestDbUrl(), poolSize: 1 });
+      await engine.initSchema();
+      await engine.disconnect();
+    };
+
+    // Fresh bootstrap, a no-op activation, and concurrent activation all stay
+    // on the direct route because initSchema owns a session advisory lock.
+    await initializeDirectSchema();
+    await initializeDirectSchema();
+    await Promise.all([initializeDirectSchema(), initializeDirectSchema()]);
+
     const eng = new PostgresEngine();
     await eng.connect({ engine: 'postgres', database_url: directTestDbUrl() });
-    await eng.initSchema();
     await eng.putPage(SLUG, {
       type: 'note',
       title: 'PgBouncer teardown fixture',
@@ -168,6 +182,79 @@ describePooled('pgbouncer txn-mode teardown (#2084 / TD1)', () => {
     expect(res.stdout).toContain(MARKER);
     expect(res.stderr).not.toMatch(/force-exiting/);
   }, 120_000);
+
+  test('pooled writes, search/query, Minion enqueue, and dream phase remain usable', async () => {
+    const previousDirectUrl = process.env.GBRAIN_DIRECT_DATABASE_URL;
+    const previousPoolSize = process.env.GBRAIN_POOL_SIZE;
+    process.env.GBRAIN_DIRECT_DATABASE_URL = directTestDbUrl();
+    process.env.GBRAIN_POOL_SIZE = '2';
+
+    const engine = new PostgresEngine();
+    try {
+      await engine.connect({
+        engine: 'postgres',
+        database_url: pooledTestDbUrl(),
+        poolSize: 8,
+      });
+
+      await engine.putPage('pgbouncer-pooled-write', {
+        type: 'note',
+        title: 'Pooled write fixture',
+        compiled_truth: 'transaction advisory lock through PgBouncer',
+        timeline: '',
+      });
+
+      const pooledPage = await engine.getPage('pgbouncer-pooled-write', { sourceId: 'default' });
+      expect(pooledPage?.title).toBe('Pooled write fixture');
+      await engine.upsertChunks('pgbouncer-pooled-write', [{
+        chunk_index: 0,
+        chunk_text: 'PgBouncer teardown fixture indexed text',
+        chunk_source: 'compiled_truth',
+      }], { sourceId: 'default' });
+
+      const keywordResults = await engine.searchKeyword('PgBouncer teardown fixture', {
+        sourceId: 'default',
+        limit: 10,
+      });
+      expect(keywordResults.some(result => result.slug === 'pgbouncer-pooled-write')).toBe(true);
+
+      const queryResults = await hybridSearch(engine, 'PgBouncer teardown fixture', {
+        sourceId: 'default',
+        expansion: false,
+        relationalRetrieval: false,
+        limit: 10,
+      });
+      expect(queryResults.some(result => result.slug === 'pgbouncer-pooled-write')).toBe(true);
+
+      const queue = new MinionQueue(engine);
+      const job = await queue.add('sync', { sourceId: 'default', noEmbed: true }, {
+        queue: 'pgbouncer-smoke',
+        max_attempts: 1,
+      });
+      expect((await queue.getJob(job.id))?.id).toBe(job.id);
+    } finally {
+      await engine.disconnect();
+      if (previousDirectUrl === undefined) delete process.env.GBRAIN_DIRECT_DATABASE_URL;
+      else process.env.GBRAIN_DIRECT_DATABASE_URL = previousDirectUrl;
+      if (previousPoolSize === undefined) delete process.env.GBRAIN_POOL_SIZE;
+      else process.env.GBRAIN_POOL_SIZE = previousPoolSize;
+    }
+
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-pgbouncer-dream-'));
+    try {
+      const res = await runCli(['dream', '--phase', 'lint', '--dry-run', '--json', '--dir', home], {
+        HOME: home,
+        GBRAIN_HOME: home,
+        GBRAIN_DATABASE_URL: pooledTestDbUrl(),
+        GBRAIN_DIRECT_DATABASE_URL: directTestDbUrl(),
+      }, 90_000);
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toMatch(/lint|phase|dry/i);
+      expect(res.stderr).not.toMatch(/force-exiting|did not return within/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 180_000);
 
   test('hosted read-pool ceiling limits concurrent PgBouncer backends', async () => {
     const originalPoolSize = process.env.GBRAIN_POOL_SIZE;
