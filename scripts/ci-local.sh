@@ -198,6 +198,7 @@ SELECTED=$(bun run scripts/select-e2e.ts)
 if [ -z "$SELECTED" ]; then
   echo "[runner] selector emitted nothing (doc-only diff); skipping E2E."
 else
+  GBRAIN_TEST_DB=1 \
   DATABASE_URL=postgresql://postgres:postgres@postgres-1:5432/gbrain_test \
   GBRAIN_PGBOUNCER_URL=postgresql://postgres:postgres@pgbouncer:5432/gbrain_pgbouncer \
   GBRAIN_PGBOUNCER_DIRECT_URL=postgresql://postgres:postgres@postgres-1:5432/gbrain_test \
@@ -215,6 +216,7 @@ env -u DATABASE_URL bash scripts/run-unit-shard.sh --max-concurrency="${GBRAIN_T
 echo "[runner] serial unit tests"
 bash scripts/run-serial-tests.sh
 echo "[runner] e2e (unsharded)"
+GBRAIN_TEST_DB=1 \
 DATABASE_URL=postgresql://postgres:postgres@postgres-1:5432/gbrain_test \
 GBRAIN_PGBOUNCER_URL=postgresql://postgres:postgres@pgbouncer:5432/gbrain_pgbouncer \
 GBRAIN_PGBOUNCER_DIRECT_URL=postgresql://postgres:postgres@postgres-1:5432/gbrain_test \
@@ -266,12 +268,14 @@ printf '%s\\n' 1 2 3 4 | xargs -P4 -I{} sh -c '
   echo \"[shard \${shard}] e2e phase (SHARD=\${shard}/4, DATABASE_URL=postgres-\${shard})\" >> \$log
   if [ -s /tmp/e2e-selected.txt ]; then
     SHARD=\${shard}/4 \\
+    GBRAIN_TEST_DB=1 \\
     DATABASE_URL=postgresql://postgres:postgres@postgres-\${shard}:5432/gbrain_test \\
     GBRAIN_PGBOUNCER_URL=postgresql://postgres:postgres@pgbouncer:5432/gbrain_pgbouncer \\
     GBRAIN_PGBOUNCER_DIRECT_URL=postgresql://postgres:postgres@postgres-1:5432/gbrain_test \\
     xargs -a /tmp/e2e-selected.txt bash scripts/run-e2e.sh >> \$log 2>&1
   else
     SHARD=\${shard}/4 \\
+    GBRAIN_TEST_DB=1 \\
     DATABASE_URL=postgresql://postgres:postgres@postgres-\${shard}:5432/gbrain_test \\
     GBRAIN_PGBOUNCER_URL=postgresql://postgres:postgres@pgbouncer:5432/gbrain_pgbouncer \\
     GBRAIN_PGBOUNCER_DIRECT_URL=postgresql://postgres:postgres@postgres-1:5432/gbrain_test \\

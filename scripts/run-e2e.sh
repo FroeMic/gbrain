@@ -74,16 +74,18 @@ mkdir -p "$E2E_TMP_HOME/.gbrain"
 # unreproducible across machines. Drop them before bun starts. This is a
 # DENYLIST of operator-context prefixes (not an allowlist rebuild), so PATH,
 # HOME, TMPDIR, CI, DATABASE_URL, and bun internals survive untouched. We keep
-# GBRAIN_HOME (just set above for HOME isolation) plus the two explicitly
-# supplied PgBouncer qualification routes; everything else GBRAIN_* is an
-# operator override the suite must not inherit. Adapts GStack's
+# GBRAIN_HOME (just set above for HOME isolation), the explicit test-database
+# reset opt-in, plus the two explicitly supplied PgBouncer qualification
+# routes; everything else GBRAIN_* is an operator override the suite must not
+# inherit. Adapts GStack's
 # buildHermeticEnv() allowlist to gbrain's shell E2E runner.
 for _e2e_var in $(env | grep -oE '^(CONDUCTOR_|MCP_|OPENCLAW_|GBRAIN_)[A-Za-z0-9_]*' | sort -u); do
   case "$_e2e_var" in
-    GBRAIN_HOME|GBRAIN_PGBOUNCER_URL|GBRAIN_PGBOUNCER_DIRECT_URL) ;;
-      # HOME isolation and the CI-supplied transaction-pool qualification
-      # routes are intentional inputs; all other GBRAIN_* variables are
-      # ambient operator overrides and must be removed.
+    GBRAIN_HOME|GBRAIN_TEST_DB|GBRAIN_PGBOUNCER_URL|GBRAIN_PGBOUNCER_DIRECT_URL) ;;
+      # HOME isolation, the explicit CI test-database reset opt-in, and the
+      # CI-supplied transaction-pool qualification routes are intentional
+      # inputs; all other GBRAIN_* variables are ambient operator overrides
+      # and must be removed.
     *) unset "$_e2e_var" || true ;;
   esac
 done
