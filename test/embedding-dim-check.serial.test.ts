@@ -21,6 +21,11 @@ import {
 } from '../src/core/embedding-dim-check.ts';
 import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 
+// These tests cover cold/fresh PGLite schema behavior and explicitly expect
+// the legacy 1536-d preload. The CI snapshot is production-default 1280-d
+// and would bypass initSchema, invalidating both assertions.
+delete process.env.GBRAIN_PGLITE_SNAPSHOT;
+
 // Canonical pattern: single engine per file, init once, disconnect once.
 // The two tests below diverge in whether they want a migrated brain or a
 // pre-initSchema brain — handled by inline reset / second-engine instead of

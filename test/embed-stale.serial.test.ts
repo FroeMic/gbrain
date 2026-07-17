@@ -17,6 +17,12 @@ import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { embedStaleForSource } from '../src/core/embed-stale.ts';
 import type { ChunkInput } from '../src/core/types.ts';
 
+// This file asserts the legacy 1536-d test schema and exercises a fresh
+// PGLite init. The CI snapshot is built with the production 1280-d default;
+// loading it would bypass initSchema and make the injected 1536-d vectors
+// fail before the embed-stale behavior is reached.
+delete process.env.GBRAIN_PGLITE_SNAPSHOT;
+
 let engine: PGLiteEngine;
 
 beforeAll(async () => {

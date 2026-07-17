@@ -41,10 +41,22 @@ echo "[serial-tests] running ${#files[@]} file(s), one bun process per file"
 fail_count=0
 failed_files=()
 for f in "${files[@]}"; do
-  if ! bun test --max-concurrency=1 --timeout=60000 "$f"; then
+  serial_home=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-serial.XXXXXX")
+  serial_tmp="$serial_home/tmp"
+  mkdir -p "$serial_tmp"
+  # The CI runner exports the production-default PGLite snapshot for the
+  # parallel lane. Serial tests intentionally exercise cold/fresh PGLite
+  # behavior and the legacy 1536-d test preload, so do not let that 1280-d
+  # snapshot bypass initSchema in this lane.
+  # HOME/GBRAIN_HOME are also per-file: serial tests intentionally exercise
+  # git/config/worker/audit state, and a fresh Bun process alone does not
+  # isolate those filesystem side effects from the preceding file.
+  if ! HOME="$serial_home" GBRAIN_HOME="$serial_home" TMPDIR="$serial_tmp" \
+    env -u GBRAIN_PGLITE_SNAPSHOT bun test --max-concurrency=1 --timeout=60000 "$f"; then
     fail_count=$((fail_count + 1))
     failed_files+=("$f")
   fi
+  rm -rf "$serial_home"
 done
 
 if [ "$fail_count" -gt 0 ]; then

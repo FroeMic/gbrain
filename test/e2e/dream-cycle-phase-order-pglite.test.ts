@@ -45,9 +45,15 @@ mock.module('../../src/core/embedding.ts', () => ({
   EMBEDDING_MODEL: 'text-embedding-3-large',
   EMBEDDING_DIMENSIONS: 1536,
   EMBEDDING_COST_PER_1K_TOKENS: 0.00013,
+  currentEmbeddingPricePerMTok: () => 0.13,
   estimateEmbeddingCostUsd: (tokens: number) => (tokens / 1000) * 0.00013,
   // v0.41.31: embed phase reads the current signature to stamp provenance.
   currentEmbeddingSignature: () => 'text-embedding-3-large:1536',
+  // v0.41.31: sync resolves whether embedding runs inline or via deferred
+  // backfill jobs; keep the E2E mock's export surface in parity with the
+  // production module so the cycle.sync phase can load cleanly.
+  willEmbedSynchronously: () => 'deferred',
+  shouldBlockSync: () => false,
 }));
 
 const { runCycle, ALL_PHASES } = await import('../../src/core/cycle.ts');
