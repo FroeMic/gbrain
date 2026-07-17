@@ -1449,21 +1449,23 @@ export async function runCycle(
   let lock: LockHandle | null = null;
   if (needsLock) {
     if (engine) {
-      // v0.38 (codex r2 P0-C + P0-D): on PGLite, acquire the GLOBAL file
-      // lock FIRST, then the per-source DB lock. PGLite is single-writer at
-      // the process layer (PGlite WASM blocks concurrent connects to the
-      // same brain dir), but the global file lock is belt-and-braces against
-      // anything that bypasses the engine — and importantly it preserves
-      // the single-writer invariant even though per-source DB lock IDs
-      // would otherwise allow two PGLite cycles to run concurrently. The
-      // ordering invariant (file → DB; release-both-on-failure; release
+      // v0.38 (codex r2 P0-C + P0-D): on persistent PGLite, acquire the
+      // GLOBAL file lock FIRST, then the per-source DB lock. PGLite is
+      // single-writer at the process layer (PGlite WASM blocks concurrent
+      // connects to the same brain dir), but the global file lock is
+      // belt-and-braces against anything that bypasses the engine — and
+      // importantly it preserves the single-writer invariant even though
+      // per-source DB lock IDs would otherwise allow two PGLite cycles to run
+      // concurrently. In-memory PGLite has no shared data directory, so a
+      // host-wide file lock would only create cross-test/process contention.
+      // The ordering invariant (file → DB; release-both-on-failure; release
       // both on exit) is documented in section 5 of the plan.
       //
       // Postgres engines skip the file lock entirely — per-source DB lock
       // IDs are the full granularity, and there's no single-writer
       // constraint to enforce.
       let pgliteFileLock: LockHandle | null = null;
-      if (engine.kind === 'pglite') {
+      if (engine.kind === 'pglite' && engine.isPersistent) {
         pgliteFileLock = acquireFileLock();
         if (pgliteFileLock === null) {
           return {

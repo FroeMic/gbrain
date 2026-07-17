@@ -1,16 +1,17 @@
 /**
  * v0.38 PGLite file+DB lock ordering regression (codex r2 P0-C + P0-D).
  *
- * PGLite is single-writer at the process layer (PGlite WASM blocks
- * concurrent connects to the same brain dir). Per-source DB lock IDs
+ * Persistent PGLite is single-writer at the process layer (PGlite WASM
+ * blocks concurrent connects to the same brain dir). Per-source DB lock IDs
  * (`gbrain-cycle:<source_id>`) would by themselves let two PGLite cycles
  * for different sources run concurrently — which would corrupt the
  * single-writer invariant.
  *
  * Defense: cycle.ts acquires the GLOBAL file lock (`~/.gbrain/cycle.lock`,
- * no source suffix) BEFORE the per-source DB lock when engine.kind ===
- * 'pglite'. The DB lock is released if file-lock acquisition fails; both
- * are released in reverse-order on exit.
+ * no source suffix) BEFORE the per-source DB lock for persistent PGlite.
+ * In-memory PGlite has no shared data directory and deliberately skips this
+ * host-wide lock. The DB lock is released if file-lock acquisition fails;
+ * both are released in reverse-order on exit.
  *
  * This test pins:
  *   - Two consecutive PGLite cycles for different sources do NOT
@@ -25,7 +26,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runCycle } from '../src/core/cycle.ts';
 import { mkdtempSync, writeFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'fs';
-import { tmpdir, homedir } from 'os';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
 let engine: PGLiteEngine;
@@ -39,7 +40,7 @@ beforeAll(async () => {
   gbrainHome = mkdtempSync(join(tmpdir(), 'gbrain-pglite-lock-'));
   process.env.GBRAIN_HOME = gbrainHome;
   engine = new PGLiteEngine();
-  await engine.connect({ database_url: '' });
+  await engine.connect({ database_path: join(gbrainHome, 'database') });
   await engine.initSchema();
 }, 60_000);
 
@@ -69,8 +70,8 @@ async function seed(id: string): Promise<void> {
   );
 }
 
-describe('PGLite cycle: file lock + per-source DB lock ordering', () => {
-  test('global file lock acquired during PGLite cycle (codex P0-C invariant)', async () => {
+describe('persistent PGLite cycle: file lock + per-source DB lock ordering', () => {
+  test('global file lock acquired during persistent PGLite cycle (codex P0-C invariant)', async () => {
     await seed('alpha');
     // Inspect the cycle.lock file existence during a running cycle.
     // Since lint is the only phase and it runs fast, we capture state
@@ -98,7 +99,7 @@ describe('PGLite cycle: file lock + per-source DB lock ordering', () => {
     // Plant a "live" file lock with our own PID — simulates an in-flight
     // cycle on a different source. The second cycle attempt MUST be
     // blocked by the file lock even though it'd have a distinct DB lock ID.
-    mkdirSync(gbrainHome, { recursive: true });
+    mkdirSync(join(gbrainHome, '.gbrain'), { recursive: true });
     writeFileSync(
       join(gbrainHome, '.gbrain', 'cycle.lock'),
       `${process.pid}\n${new Date().toISOString()}\n`,

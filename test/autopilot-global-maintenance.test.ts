@@ -13,6 +13,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
+import { withEnv } from './helpers/with-env.ts';
 import { registerBuiltinHandlers } from '../src/commands/jobs.ts';
 import {
   ALL_PHASES,
@@ -20,6 +21,7 @@ import {
   NON_GLOBAL_PHASES,
   PHASE_SCOPE,
   LAST_GLOBAL_AT_KEY,
+  runCycle,
 } from '../src/core/cycle.ts';
 import {
   dispatchGlobalMaintenance,
@@ -27,6 +29,9 @@ import {
   dispatchPerSource,
 } from '../src/commands/autopilot-fanout.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 describe('cycle phase partition (#2194 fix #3)', () => {
   test('GLOBAL ∪ NON_GLOBAL == ALL_PHASES, no overlap', () => {
@@ -120,6 +125,24 @@ describe('autopilot-global-maintenance handler stamps last_global_at (PGLite)', 
   beforeAll(async () => { engine = new PGLiteEngine(); await engine.connect({}); await engine.initSchema(); }, 30000);
   afterAll(async () => { await engine.disconnect(); });
   beforeEach(async () => { await resetPgliteState(engine); });
+
+  test('in-memory PGLite cycles do not depend on the global filesystem lock', async () => {
+    const gbrainHome = mkdtempSync(join(tmpdir(), 'gbrain-autopilot-global-lock-'));
+    await withEnv({ GBRAIN_HOME: gbrainHome }, async () => {
+      const lockDir = join(gbrainHome, '.gbrain');
+      mkdirSync(lockDir, { recursive: true });
+      // Simulate a different live gbrain process holding the legacy lock.
+      writeFileSync(join(lockDir, 'cycle.lock'), `${process.ppid}\n${new Date().toISOString()}\n`);
+
+      const report = await runCycle(engine, {
+        brainDir: null,
+        phases: ['orphans', 'embed'],
+      });
+
+      expect(report.status).not.toBe('skipped');
+      expect(report.phases.some((p: any) => p.phase === 'orphans')).toBe(true);
+    });
+  });
 
   async function captureHandlers() {
     const handlers = new Map<string, (job: any) => Promise<any>>();

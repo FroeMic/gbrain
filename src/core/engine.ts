@@ -649,6 +649,12 @@ export function clampSearchLimit(limit: number | undefined, defaultLimit = 20, c
 export interface BrainEngine {
   /** Discriminator: lets migrations and other consumers branch on engine kind without instanceof + dynamic imports. */
   readonly kind: 'postgres' | 'pglite';
+  /**
+   * Whether this engine is backed by a persistent PGlite data directory.
+   * In-memory PGlite instances are process-local and must not contend on the
+   * host-wide cycle lock used to protect persistent PGlite databases.
+   */
+  readonly isPersistent?: boolean;
 
   // Lifecycle
   connect(config: EngineConfig): Promise<void>;

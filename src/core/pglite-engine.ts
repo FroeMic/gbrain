@@ -257,6 +257,10 @@ export class PGLiteEngine implements BrainEngine {
   // present + migrations already applied). Saves ~1-3s per fresh test PGLite.
   private _snapshotLoaded = false;
 
+  get isPersistent(): boolean {
+    return Boolean(this._savedConfig?.database_path);
+  }
+
   get db(): PGLiteDB {
     if (!this._db) throw new Error('PGLite not connected. Call connect() first.');
     return this._db;
