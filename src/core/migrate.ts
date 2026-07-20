@@ -14,7 +14,7 @@ import { slugifyPath } from './sync.ts';
  * (e.g., data transformations that need TypeScript, not just SQL).
  */
 
-interface Migration {
+export interface Migration {
   version: number;
   name: string;
   /** Engine-agnostic SQL. Used when `sqlFor` is absent. Set to '' for handler-only or sqlFor-only migrations. */
@@ -23,7 +23,7 @@ interface Migration {
    * Engine-specific SQL. If present, overrides `sql` for the matching engine.
    * Needed when Postgres wants CONCURRENTLY but PGLite can't honor it.
    */
-  sqlFor?: { postgres?: string; pglite?: string };
+  sqlFor?: { managedPostgres?: string; postgres?: string; pglite?: string };
   /**
    * When false, the runner does NOT wrap the SQL in `engine.transaction()`.
    * Required for `CREATE INDEX CONCURRENTLY` (which Postgres refuses inside a transaction).
@@ -55,6 +55,26 @@ interface Migration {
    * older migrations rely on `gbrain upgrade --force-schema` for recovery.
    */
   verify?: (engine: BrainEngine) => Promise<boolean>;
+}
+
+/**
+ * Select the SQL for a migration and engine.
+ *
+ * Monodrive provisions each brain in its own managed Postgres database. That
+ * topology cannot grant the brain owner RDS's elevated event-trigger privilege
+ * just to install v35's global auto-RLS hook, so a forked runtime may opt into
+ * the managed-isolated SQL variant. The standard Postgres and PGLite paths are
+ * unchanged unless the caller explicitly enables the variant.
+ */
+export function resolveMigrationSQL(
+  migration: Migration,
+  engineKind: BrainEngine['kind'],
+  managedIsolatedDatabase = process.env.MONODRIVE_GBRAIN_MANAGED_ISOLATED_DATABASE === '1',
+): string {
+  if (engineKind === 'postgres' && managedIsolatedDatabase) {
+    return migration.sqlFor?.managedPostgres ?? migration.sqlFor?.postgres ?? migration.sql;
+  }
+  return migration.sqlFor?.[engineKind] ?? migration.sql;
 }
 
 /**
@@ -1724,6 +1744,39 @@ export const MIGRATIONS: Migration[] = [
           IF NOT has_bypass THEN
             -- Same posture as v24: raise to abort the migration so the runner
             -- leaves config.version unbumped and retries on the next call.
+            RAISE EXCEPTION 'v35 auto_rls_event_trigger backfill: role % does not have BYPASSRLS — cannot enable RLS safely. Re-run as postgres (or another BYPASSRLS role).', current_user;
+          END IF;
+
+          FOR r IN
+            SELECT n.nspname AS schema_name, c.relname AS table_name
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = 0
+            WHERE n.nspname = 'public'
+              AND c.relkind = 'r'
+              AND c.relrowsecurity = false
+              AND (d.description IS NULL OR d.description !~ '^GBRAIN:RLS_EXEMPT\\s+reason=\\S.{3,}')
+          LOOP
+            EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY', r.schema_name, r.table_name);
+            RAISE NOTICE 'v35: backfilled RLS on %.%', r.schema_name, r.table_name;
+          END LOOP;
+        END $$;
+      `,
+      // Monodrive's hosted topology gives each brain a private database and a
+      // restricted BYPASSRLS owner role. RLS still protects the database's
+      // tables, and the backfill must remain fail-loud, but CREATE EVENT
+      // TRIGGER is a cluster-level privilege that RDS does not grant to the
+      // per-brain role. Database isolation replaces the shared-project gap
+      // that the standard global trigger closes, so omit only that trigger
+      // installation in the explicit managed-isolated runtime mode.
+      managedPostgres: `
+        DO $$
+        DECLARE
+          has_bypass BOOLEAN;
+          r record;
+        BEGIN
+          SELECT EXISTS (SELECT 1 FROM pg_roles pr WHERE pg_has_role(current_user, pr.oid, 'USAGE') AND (pr.rolbypassrls OR pr.rolsuper)) INTO has_bypass; -- #1385: superuser + inherited-role BYPASSRLS, not just the role's own rolbypassrls
+          IF NOT has_bypass THEN
             RAISE EXCEPTION 'v35 auto_rls_event_trigger backfill: role % does not have BYPASSRLS — cannot enable RLS safely. Re-run as postgres (or another BYPASSRLS role).', current_user;
           END IF;
 
@@ -5879,7 +5932,9 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
     process.stderr.write(`  [${m.version}] ${m.name}...\n`);
 
     // Pick SQL: engine-specific `sqlFor` wins over engine-agnostic `sql`.
-    const sql = m.sqlFor?.[engine.kind] ?? m.sql;
+    // The explicit managed-isolated flag selects a Postgres-only compatibility
+    // variant for migrations whose standard SQL needs cluster privileges.
+    const sql = resolveMigrationSQL(m, engine.kind);
 
     if (sql) {
       try {

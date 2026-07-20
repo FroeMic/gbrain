@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
-import { LATEST_VERSION, runMigrations, MIGRATIONS, getIdleBlockers, hasPendingMigrations } from '../src/core/migrate.ts';
+import { LATEST_VERSION, runMigrations, MIGRATIONS, getIdleBlockers, hasPendingMigrations, resolveMigrationSQL } from '../src/core/migrate.ts';
 import type { IdleBlocker } from '../src/core/migrate.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -547,6 +547,31 @@ describe('migration v35 — auto_rls_event_trigger structural guards', () => {
     const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
     expect(sql).toMatch(/rolbypassrls/);
     expect(sql).toMatch(/RAISE\s+EXCEPTION/i);
+  });
+
+  test('managed isolated Postgres keeps the RLS backfill but skips the event trigger', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    expect(v35).toBeDefined();
+
+    const sql = resolveMigrationSQL(v35!, 'postgres', true);
+
+    expect(sql).toMatch(/rolbypassrls/);
+    expect(sql).toMatch(/ENABLE\s+ROW\s+LEVEL\s+SECURITY/i);
+    expect(sql).not.toMatch(/CREATE\s+EVENT\s+TRIGGER/i);
+    expect(sql).not.toContain('auto_enable_rls');
+  });
+
+  test('managed migration selection is Postgres-only and defaults to standard SQL', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    expect(v35).toBeDefined();
+
+    const standard = resolveMigrationSQL(v35!, 'postgres', false);
+    const managed = resolveMigrationSQL(v35!, 'postgres', true);
+    const pglite = resolveMigrationSQL(v35!, 'pglite', true);
+
+    expect(standard).toMatch(/CREATE\s+EVENT\s+TRIGGER/i);
+    expect(managed).not.toBe(standard);
+    expect(pglite).toBe('');
   });
 });
 
