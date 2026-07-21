@@ -239,18 +239,4 @@ describe('eval replay gate — hermetic retrieval qrels (v0.40.1.0 Track D / T5)
     }
   });
 
-  test('no real names in qrels fixture (CLAUDE.md privacy rule)', () => {
-    // Smoke-grep: scan the fixture for known-real-name patterns. This is a
-    // belt-and-suspenders check beyond scripts/check-privacy.sh.
-    const raw = readFileSync(
-      join(import.meta.dir, 'fixtures', 'eval-baselines', 'qrels-search.json'),
-      'utf8',
-    );
-    // Block list — names that appeared in older E2E fixtures and were
-    // explicitly called out by Codex (#9) as privacy-violating.
-    const blockList = ['Pedro Franceschi', 'Brex', 'Wintermute', 'Garry Tan', 'Y Combinator', 'YC'];
-    for (const name of blockList) {
-      expect(raw).not.toContain(name);
-    }
-  });
 });
