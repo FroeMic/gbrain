@@ -28,6 +28,10 @@ import type { OperationContext, AuthInfo } from '../core/operations.ts';
 import { GBrainOAuthProvider, validateTokenEndpointAuthMethod } from '../core/oauth-provider.ts';
 import type { SqlQuery } from '../core/oauth-provider.ts';
 import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
+import {
+  createHttpExecutionPolicy,
+  type HttpExecutionMode,
+} from '../mcp/http-execution-policy.ts';
 import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
 import { paramDefToSchema } from '../mcp/tool-defs.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
@@ -276,7 +280,7 @@ export function resolveCorsOrigin(allowlist: Set<string> | null): cors.CorsOptio
   };
 }
 
-interface ServeHttpOptions {
+export interface ServeHttpOptions {
   port: number;
   tokenTtl: number;
   enableDcr: boolean;
@@ -333,6 +337,10 @@ interface ServeHttpOptions {
    * captured to a non-interactive log and accept the leak.
    */
   printAdminToken?: boolean;
+  /** Startup-only trust posture for authenticated MCP calls. */
+  executionMode?: HttpExecutionMode;
+  /** Default source selected by the host process. */
+  sourceId?: string;
 }
 
 /**
@@ -441,6 +449,10 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // than silently binding loopback only.
   const bind = options.bind ?? '127.0.0.1';
   const config = loadConfig() || { engine: 'pglite' as const };
+  const executionPolicy = createHttpExecutionPolicy(
+    options.executionMode ?? 'remote',
+    options.sourceId ?? 'default',
+  );
 
   if (logFullParams) {
     console.error(
@@ -1491,7 +1503,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // ---------------------------------------------------------------------------
   // MCP tool calls (bearer auth + scope enforcement)
   // ---------------------------------------------------------------------------
-  const mcpOperations = operations.filter(op => !op.localOnly);
+  const mcpOperations = executionPolicy.publishedOperations(operations);
 
   // v0.36.x #1076: MCP Streamable HTTP spec — GET /mcp opens an optional SSE
   // backchannel for server-initiated messages. gbrain's transport is stateless
@@ -1593,7 +1605,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // hierarchy. Plain string includes() at this site would have made
       // sources_admin tokens look like they couldn't even read.)
       const requiredScope = op.scope || 'read';
-      if (!hasScope(authInfo.scopes, requiredScope)) {
+      if (!executionPolicy.admitsOperation(authInfo.scopes, op)) {
         // v0.28.10: persist scope-rejected attempts. Same operator-visibility
         // motivation as the unknown-op path — and it makes the v0.26.3
         // persistence regression test reliable across both rejection paths.
@@ -1656,8 +1668,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // injection via the metaHook. HTTP-specific concerns (mcp_request_log
       // persistence + SSE broadcast) stay here; the dispatcher returns the
       // ToolResult and we read isError + _meta to pick the right branch.
-      const tokenAllowList = (authInfo as AuthInfo & { takesHoldersAllowList?: string[] }).takesHoldersAllowList
-        ?? ['world'];
       // v0.34.1 (#861, D13): AuthInfo.sourceId is now a real typed field
       // populated from oauth_clients.source_id (migration v60 backfilled
       // NULL → 'default'). Pre-fix this site cast through AuthInfo and
@@ -1665,21 +1675,20 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // path codex flagged in plan review. Post-v60, every OAuth client
       // has source_id set; legacy bearer tokens default to 'default' in
       // verifyAccessToken. The env-fallback is gone.
-      const tokenSourceId = authInfo.sourceId ?? 'default';
+      const policyDispatchOptions = executionPolicy.dispatchOptions(
+        authInfo as AuthInfo & { takesHoldersAllowList?: string[] },
+      );
 
       let toolResult: Awaited<ReturnType<typeof dispatchToolCall>>;
       try {
         toolResult = await dispatchToolCall(engine, name, params as Record<string, unknown> | undefined, {
-          remote: true,
-          takesHoldersAllowList: tokenAllowList,
-          sourceId: tokenSourceId,
+          ...policyDispatchOptions,
           metaHook: getBrainHotMemoryMeta,
           // v0.31 follow-up fix: thread auth so the whoami op (and any
           // future scope-aware handlers) can introspect the caller. The
           // original D12/eE1 refactor moved dispatch into dispatchToolCall
           // but forgot to pass authInfo; whoami fell through to the
           // unknown_transport throw because ctx.auth was undefined.
-          auth: authInfo,
           privateTraceMeta,
           logger: {
             info: (msg: string) => console.error(`[INFO] ${msg}`),

@@ -96,6 +96,8 @@ export interface DispatchOpts {
   auth?: AuthInfo;
   /** Internal MCP `_meta` carrier; never part of operation params or results. */
   privateTraceMeta?: Record<string, unknown>;
+  /** Hide unexpected exception messages at network boundaries. */
+  redactInternalErrors?: boolean;
 }
 
 /**
@@ -267,8 +269,11 @@ export async function dispatchToolCall(
   const safeParams = params || {};
   const validationError = validateParams(op, safeParams);
   if (validationError) {
+    const message = opts.redactInternalErrors
+      ? 'Invalid parameters. Review the tool schema and supplied values.'
+      : validationError;
     return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'invalid_params', message: validationError }, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify({ error: 'invalid_params', message }, null, 2) }],
       isError: true,
     };
   }
@@ -298,13 +303,25 @@ export async function dispatchToolCall(
     });
   } catch (e: unknown) {
     if (e instanceof OperationError) {
-      return { content: [{ type: 'text', text: JSON.stringify(e.toJSON(), null, 2) }], isError: true };
+      const payload = opts.redactInternalErrors
+        ? {
+            error: e.code,
+            message: e.code === 'invalid_params'
+              ? 'Invalid parameters. Review the tool schema and supplied values.'
+              : e.code === 'permission_denied'
+                ? 'Operation is not permitted for this authenticated caller.'
+                : 'Operation failed. Review the error code and server-side attributed log.',
+          }
+        : e.toJSON();
+      return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], isError: true };
     }
     // Non-OperationError (uncaught throws) — wrap in the same shape so
     // every error response is JSON-parseable. The pre-v0.31 path emitted
     // plain `Error: ${msg}` strings here, which broke any caller that
     // tried JSON.parse(content).
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = opts.redactInternalErrors
+      ? 'Operation failed unexpectedly. Review the attributed server log.'
+      : (e instanceof Error ? e.message : String(e));
     return {
       content: [{ type: 'text', text: JSON.stringify({ error: 'internal_error', message: msg }, null, 2) }],
       isError: true,

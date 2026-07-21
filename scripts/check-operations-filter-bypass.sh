@@ -93,18 +93,25 @@ while IFS= read -r file; do
   fi
 done <<< "$FOUND_FILES"
 
-# Check 2: serve-http.ts MUST contain the canonical filter expression near
-# its operations import. Without the filter, the entire HTTP MCP surface
-# leaks localOnly ops.
+# Check 2: serve-http.ts MUST delegate publication to the startup policy, and
+# the policy MUST preserve the canonical filter for remote mode. Trusted-host
+# mode is an explicit process-level exception covered by runtime tests.
 SERVE_HTTP="src/commands/serve-http.ts"
+POLICY="src/mcp/http-execution-policy.ts"
 if [ -f "$SERVE_HTTP" ]; then
-  if ! grep -qE 'operations\.filter\(\s*op\s*=>\s*!op\.localOnly\s*\)' "$SERVE_HTTP"; then
-    echo "FAIL: $SERVE_HTTP no longer contains the canonical"
-    echo "      operations.filter(op => !op.localOnly) expression. The HTTP MCP"
-    echo "      surface depends on this filter to enforce localOnly. Restore"
-    echo "      the filter or refactor the trust boundary explicitly."
+  if ! grep -qE 'executionPolicy\.publishedOperations\(operations\)' "$SERVE_HTTP"; then
+    echo "FAIL: $SERVE_HTTP must publish operations through executionPolicy."
     FAIL=1
   fi
+fi
+if [ -f "$POLICY" ]; then
+  if ! grep -qE 'catalog\.filter\(operation[[:space:]]*=>[[:space:]]*!operation\.localOnly\)' "$POLICY"; then
+    echo "FAIL: $POLICY must preserve the localOnly filter in remote mode."
+    FAIL=1
+  fi
+else
+  echo "FAIL: missing $POLICY."
+  FAIL=1
 fi
 
 if [ "$FAIL" -eq 1 ]; then

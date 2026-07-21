@@ -38,6 +38,7 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { hasScope } from '../src/core/scope.ts';
+import { createHttpExecutionPolicy } from '../src/mcp/http-execution-policy.ts';
 
 let engine: PGLiteEngine;
 
@@ -122,7 +123,7 @@ describe('mcpOperations filter — localOnly ops are excluded from the HTTP-expo
   // regression surfaces as a structural test failure.
 
   test('the canonical filter excludes every localOnly op', () => {
-    const mcpOps = operations.filter(op => !op.localOnly);
+    const mcpOps = createHttpExecutionPolicy('remote', 'default').publishedOperations(operations);
     const mcpNames = new Set(mcpOps.map(op => op.name));
     const localOnlyOps = operations.filter(op => op.localOnly === true);
 
@@ -153,6 +154,7 @@ describe('mcpOperations filter — localOnly ops are excluded from the HTTP-expo
       'purge_deleted_pages',
       'get_recent_transcripts',
       'code_traversal_cache_clear',
+      'chronicle_backfill',
     ];
     const lookup = new Map(operations.map(op => [op.name, op] as const));
     for (const name of KNOWN_LOCAL_ONLY) {
@@ -160,6 +162,12 @@ describe('mcpOperations filter — localOnly ops are excluded from the HTTP-expo
       expect(op, `expected canonical op "${name}" to still exist`).toBeDefined();
       expect(op!.localOnly, `"${name}" must stay localOnly`).toBe(true);
     }
+  });
+
+  test('trusted-host policy publishes the complete catalog', () => {
+    const trustedOps = createHttpExecutionPolicy('trusted_host', 'default')
+      .publishedOperations(operations);
+    expect(trustedOps.map(op => op.name)).toEqual(operations.map(op => op.name));
   });
 });
 

@@ -561,3 +561,30 @@ describe('watchdog platform defaults', () => {
     expect(n).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe('runServe HTTP startup policy', () => {
+  test('defaults to remote execution mode', async () => {
+    let captured: Parameters<NonNullable<ServeOptions['startHttpServer']>>[1] | undefined;
+    await runServe(new StubEngine() as unknown as BrainEngine, ['--http'], {
+      startHttpServer: async (_engine, options) => { captured = options; },
+    });
+
+    expect(captured?.executionMode).toBe('remote');
+  });
+
+  test('accepts trusted_host only as a process startup option', async () => {
+    let captured: Parameters<NonNullable<ServeOptions['startHttpServer']>>[1] | undefined;
+    await runServe(
+      new StubEngine() as unknown as BrainEngine,
+      ['--http', '--execution-mode', 'trusted_host'],
+      { startHttpServer: async (_engine, options) => { captured = options; } },
+    );
+
+    expect(captured?.executionMode).toBe('trusted_host');
+    await expect(runServe(
+      new StubEngine() as unknown as BrainEngine,
+      ['--http', '--execution-mode', 'owner'],
+      { startHttpServer: async () => undefined },
+    )).rejects.toThrow("Invalid --execution-mode 'owner'");
+  });
+});

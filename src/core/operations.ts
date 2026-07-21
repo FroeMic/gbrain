@@ -27,7 +27,6 @@ import { stampEvidence } from './search/evidence.ts';
 import { profileOperation, profileStage } from './search/profiling.ts';
 import type { SearchResult } from './types.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
-import * as db from './db.ts';
 import { VERSION } from '../version.ts';
 import {
   GET_RECENT_SALIENCE_DESCRIPTION,
@@ -1360,7 +1359,7 @@ const restore_page: Operation = {
 
 const purge_deleted_pages: Operation = {
   name: 'purge_deleted_pages',
-  description: 'v0.26.5 — admin-only. Hard-deletes pages whose deleted_at is older than older_than_hours (default 72). Cascades through content_chunks, page_links, chunk_relations. Local CLI only (not exposed over HTTP MCP). Manual escape hatch alongside the autopilot purge phase.',
+  description: 'v0.26.5 — admin-only. Hard-deletes pages whose deleted_at is older than older_than_hours (default 72). Cascades through content_chunks, page_links, chunk_relations. Local CLI or trusted-host HTTP only. Manual escape hatch alongside the autopilot purge phase.',
   params: {
     older_than_hours: { type: 'number', description: 'Age cutoff in hours. Default 72.' },
   },
@@ -2717,12 +2716,17 @@ const file_list: Operation = {
   },
   scope: 'admin',
   localOnly: true,
-  handler: async (_ctx, p) => {
-    const sql = db.getConnection();
+  handler: async (ctx, p) => {
     const slug = p.slug as string | undefined;
     const rows = slug
-      ? await sql`SELECT id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files WHERE page_slug = ${slug} ORDER BY filename LIMIT ${FILE_LIST_LIMIT}`
-      : await sql`SELECT id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files ORDER BY page_slug, filename LIMIT ${FILE_LIST_LIMIT}`;
+      ? await ctx.engine.executeRaw<Record<string, unknown>>(
+          'SELECT id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files WHERE page_slug = $1 ORDER BY filename LIMIT $2',
+          [slug, FILE_LIST_LIMIT],
+        )
+      : await ctx.engine.executeRaw<Record<string, unknown>>(
+          'SELECT id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files ORDER BY page_slug, filename LIMIT $1',
+          [FILE_LIST_LIMIT],
+        );
     // Postgres returns size_bytes (BIGINT) as native BigInt — JSON.stringify
     // throws on those, breaking MCP callers. PGLite returns Number already.
     // 9 PB ceiling (2^53 bytes) is far above any plausible file size.
@@ -2775,8 +2779,10 @@ const file_upload: Operation = {
     };
     const mimeType = MIME_TYPES[extname(filePath).toLowerCase()] || null;
 
-    const sql = db.getConnection();
-    const existing = await sql`SELECT id FROM files WHERE content_hash = ${hash} AND storage_path = ${storagePath}`;
+    const existing = await ctx.engine.executeRaw<{ id: number }>(
+      'SELECT id FROM files WHERE content_hash = $1 AND storage_path = $2',
+      [hash, storagePath],
+    );
     if (existing.length > 0) {
       return { status: 'already_exists', storage_path: storagePath };
     }
@@ -2793,14 +2799,15 @@ const file_upload: Operation = {
     }
 
     try {
-      await sql`
-        INSERT INTO files (page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
-        VALUES (${pageSlug}, ${filename}, ${storagePath}, ${mimeType}, ${stat.size}, ${hash}, ${'{}'}::jsonb)
-        ON CONFLICT (storage_path) DO UPDATE SET
-          content_hash = EXCLUDED.content_hash,
-          size_bytes = EXCLUDED.size_bytes,
-          mime_type = EXCLUDED.mime_type
-      `;
+      await ctx.engine.executeRaw(
+        `INSERT INTO files (page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+         ON CONFLICT (storage_path) DO UPDATE SET
+           content_hash = EXCLUDED.content_hash,
+           size_bytes = EXCLUDED.size_bytes,
+           mime_type = EXCLUDED.mime_type`,
+        [pageSlug, filename, storagePath, mimeType, stat.size, hash, '{}'],
+      );
     } catch (dbErr) {
       // Rollback: clean up storage if DB write failed
       if (ctx.config.storage) {
@@ -2825,9 +2832,11 @@ const file_url: Operation = {
   },
   scope: 'admin',
   localOnly: true,
-  handler: async (_ctx, p) => {
-    const sql = db.getConnection();
-    const rows = await sql`SELECT storage_path, mime_type, size_bytes FROM files WHERE storage_path = ${p.storage_path as string}`;
+  handler: async (ctx, p) => {
+    const rows = await ctx.engine.executeRaw<Record<string, unknown>>(
+      'SELECT storage_path, mime_type, size_bytes FROM files WHERE storage_path = $1',
+      [p.storage_path as string],
+    );
     if (rows.length === 0) {
       throw new OperationError('storage_error', `File not found: ${p.storage_path}`);
     }
@@ -3677,9 +3686,8 @@ const get_recent_transcripts: Operation = {
   name: 'get_recent_transcripts',
   description: GET_RECENT_TRANSCRIPTS_DESCRIPTION,
   scope: 'read',
-  // Local-only: rejects HTTP-borne MCP traffic at tool-list time
-  // (serve-http.ts filters on `localOnly`) AND at runtime via the in-handler
-  // ctx.remote check. Defense in depth: hidden + rejected.
+  // Local-owner only: default HTTP hides it, while trusted-host HTTP dispatches
+  // with remote=false and therefore matches the local CLI behavior.
   localOnly: true,
   params: {
     days: { type: 'number', description: 'Window in days. Default 7.' },
@@ -3698,7 +3706,7 @@ const get_recent_transcripts: Operation = {
     if (ctx.remote === true) {
       throw new OperationError(
         'permission_denied',
-        'get_recent_transcripts is local-only — call via the gbrain CLI.',
+        'get_recent_transcripts requires a local CLI or trusted-host HTTP caller.',
       );
     }
     const { listRecentTranscripts } = await import('./transcripts.ts');

@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import type { BrainEngine } from '../core/engine.ts';
 import { startMcpServer } from '../mcp/server.ts';
+import { parseHttpExecutionMode } from '../mcp/http-execution-policy.ts';
+import type { ServeHttpOptions } from './serve-http.ts';
 
 // Maximum time the stdio path will wait for engine.disconnect() (PGLite
 // close + advisory lock release) before forcing exit. Keeps a wedged
@@ -67,6 +69,8 @@ export interface ServeOptions {
   // transport.onclose still cover legitimate shutdown.
   // Defaults to `process.env.MCP_STDIO === '1'` when omitted.
   mcpStdio?: boolean;
+  // Test seam for HTTP startup option parsing. Production uses runServeHttp.
+  startHttpServer?: (engine: BrainEngine, options: ServeHttpOptions) => Promise<void>;
 }
 
 export async function runServe(
@@ -127,8 +131,42 @@ export async function runServe(
     // raw value even on a non-TTY start.
     const printAdminToken = args.includes('--print-admin-token');
 
-    const { runServeHttp } = await import('./serve-http.ts');
-    await runServeHttp(engine, { port, tokenTtl, enableDcr, enableDcrInsecure, publicUrl, logFullParams, bind, suppressBootstrapToken, printAdminToken });
+    const executionModeIdx = args.indexOf('--execution-mode');
+    if (executionModeIdx >= 0 && !args[executionModeIdx + 1]) {
+      throw new Error('Missing value for --execution-mode. Expected remote or trusted_host.');
+    }
+    const executionMode = parseHttpExecutionMode(
+      executionModeIdx >= 0 ? args[executionModeIdx + 1] : undefined,
+    );
+
+    const sourceIdx = args.indexOf('--source');
+    if (sourceIdx >= 0 && !args[sourceIdx + 1]) {
+      throw new Error('Missing value for --source.');
+    }
+    let sourceId = process.env.GBRAIN_SOURCE || 'default';
+    try {
+      const { resolveSourceId } = await import('../core/source-resolver.ts');
+      sourceId = await resolveSourceId(engine, sourceIdx >= 0 ? args[sourceIdx + 1] : null);
+    } catch {
+      // A new brain can start before its sources table exists. Keep the
+      // explicit environment/default source in that bootstrap state.
+    }
+
+    const startHttpServer = opts.startHttpServer
+      ?? (await import('./serve-http.ts')).runServeHttp;
+    await startHttpServer(engine, {
+      port,
+      tokenTtl,
+      enableDcr,
+      enableDcrInsecure,
+      publicUrl,
+      logFullParams,
+      bind,
+      suppressBootstrapToken,
+      printAdminToken,
+      executionMode,
+      sourceId,
+    });
     return;
   }
 

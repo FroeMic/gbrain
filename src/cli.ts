@@ -2405,6 +2405,8 @@ ADMIN
         [--json]                     (git-tracked vs supabase-only)
   serve                              MCP server (stdio)
   serve --http [--port N]            HTTP MCP server with OAuth 2.1
+    --execution-mode MODE            remote (default) or trusted_host
+    --source ID                      Host-selected default source
     --token-ttl N                    Access token TTL in seconds (default: 3600)
     --enable-dcr                     Enable Dynamic Client Registration (DCR clients default to authorization_code)
     --enable-dcr-insecure            Also allow the consent-bypassing client_credentials grant on DCR (implies --enable-dcr)

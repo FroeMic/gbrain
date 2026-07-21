@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, symlinkSync, mkdtempSync } from 'fs';
 import { join, basename } from 'path';
 import { createHash } from 'crypto';
@@ -6,7 +6,6 @@ import { extname } from 'path';
 import { tmpdir } from 'os';
 import { collectFiles } from '../src/commands/files.ts';
 import { operationsByName } from '../src/core/operations.ts';
-import * as db from '../src/core/db.ts';
 
 const TMP = join(import.meta.dir, '.tmp-files-test');
 
@@ -198,23 +197,19 @@ describe('collectFiles (production import)', () => {
         mime_type: null, size_bytes: null, content_hash: 'h2',
         created_at: '2026-04-27' },
     ];
-    const fakeSql: any = (..._: unknown[]) => Promise.resolve(fakeRows);
-    const spy = spyOn(db, 'getConnection').mockReturnValue(fakeSql);
+    const op = operationsByName['file_list'];
+    const ctx: any = {
+      engine: { executeRaw: async () => fakeRows },
+      config: {}, logger: { info() {}, warn() {}, error() {} }, dryRun: false, remote: true,
+    };
+    const result = await op.handler(ctx, {}) as Array<Record<string, unknown>>;
 
-    try {
-      const op = operationsByName['file_list'];
-      const ctx: any = { engine: null, config: {}, logger: { info() {}, warn() {}, error() {} }, dryRun: false, remote: true };
-      const result = await op.handler(ctx, {}) as Array<Record<string, unknown>>;
-
-      expect(result.length).toBe(2);
-      expect(typeof result[0].size_bytes).toBe('number');
-      expect(result[0].size_bytes).toBe(4096);
-      expect(result[1].size_bytes).toBeNull();
-      // The exact failure mode openclaw reported.
-      expect(() => JSON.stringify(result)).not.toThrow();
-    } finally {
-      spy.mockRestore();
-    }
+    expect(result.length).toBe(2);
+    expect(typeof result[0].size_bytes).toBe('number');
+    expect(result[0].size_bytes).toBe(4096);
+    expect(result[1].size_bytes).toBeNull();
+    // The exact failure mode openclaw reported.
+    expect(() => JSON.stringify(result)).not.toThrow();
   });
 
   test('collectFiles skips node_modules', () => {
