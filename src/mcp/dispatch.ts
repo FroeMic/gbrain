@@ -261,7 +261,11 @@ export async function dispatchToolCall(
     // unknown-op path and the resulting test failure looked like a
     // transport bug.
     return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'unknown_tool', message: `Unknown tool: ${name}` }, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify({
+        error: 'unknown_tool',
+        message: `Unknown tool: ${name}`,
+        remediation: 'Choose a tool from tools/list.',
+      }, null, 2) }],
       isError: true,
     };
   }
@@ -273,7 +277,11 @@ export async function dispatchToolCall(
       ? 'Invalid parameters. Review the tool schema and supplied values.'
       : validationError;
     return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'invalid_params', message }, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify({
+        error: 'invalid_params',
+        message,
+        remediation: 'Review the tool schema and correct the supplied values.',
+      }, null, 2) }],
       isError: true,
     };
   }
@@ -311,6 +319,13 @@ export async function dispatchToolCall(
               : e.code === 'permission_denied'
                 ? 'Operation is not permitted for this authenticated caller.'
                 : 'Operation failed. Review the error code and server-side attributed log.',
+            remediation: e.code === 'invalid_params'
+              ? 'Review the tool schema and correct the supplied values.'
+              : e.code === 'permission_denied'
+                ? 'Use an operation that this authenticated caller can access.'
+                : op.mutating
+                  ? 'Inspect durable brain state before you try the operation again.'
+                  : 'Correct the reported condition, then try again.',
           }
         : e.toJSON();
       return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], isError: true };
@@ -323,7 +338,13 @@ export async function dispatchToolCall(
       ? 'Operation failed unexpectedly. Review the attributed server log.'
       : (e instanceof Error ? e.message : String(e));
     return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'internal_error', message: msg }, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify({
+        error: 'internal_error',
+        message: msg,
+        remediation: op.mutating
+          ? 'Inspect durable brain state before you try the operation again.'
+          : 'Try again. If the error continues, review the attributed server log.',
+      }, null, 2) }],
       isError: true,
     };
   }

@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { operations } from '../../src/core/operations.ts';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
+import {
+  createTrustedHttpCommandCaller,
+  runCommandCase,
+} from '../helpers/brain-command-contract.ts';
+import { addTagCommandCase, identityCommandCase } from '../helpers/command-cases/core.ts';
 
 const PORT = 19132;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -124,6 +129,21 @@ describe('trusted-host HTTP MCP', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(response.status).toBe(401);
+  });
+
+  test('runs the shared representative read and write cases through trusted HTTP', async () => {
+    const caller = createTrustedHttpCommandCaller({ accessToken, baseUrl: BASE });
+    const before = await (await mcp('tools/call', {
+      name: 'get_tags', arguments: { slug: 'people/alice-example' },
+    })).text();
+    expect(before).not.toContain('parity');
+    await runCommandCase(caller, identityCommandCase);
+    await runCommandCase(caller, addTagCommandCase);
+    await runCommandCase(caller, addTagCommandCase);
+    const after = await (await mcp('tools/call', {
+      name: 'get_tags', arguments: { slug: 'people/alice-example' },
+    })).text();
+    expect(after).toContain('parity');
   });
 
   test('publishes the complete operation catalog', async () => {
