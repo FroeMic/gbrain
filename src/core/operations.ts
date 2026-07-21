@@ -4539,17 +4539,26 @@ async function getRemoteMaxBytes(engine: BrainEngine): Promise<number> {
 
 const get_active_schema_pack: Operation = {
   name: 'get_active_schema_pack',
-  description: 'v0.40.6.0: cheap identity packet for the active schema pack. Returns {pack_name, version, sha8, page_types_count, link_types_count, primitive_summary, source_tier}. Useful for agents to know which pack they are operating against without paying full manifest load cost.',
+  description: 'v0.40.6.0: cheap identity packet for the active schema pack. Returns {pack_name, version, sha8, page_types_count, link_types_count, primitive_summary, source_tier}. Useful for agents to know which pack they are operating against without paying full manifest load cost. INT-438: when the resolved pack name has no manifest on disk (e.g. a fresh replacement runtime whose config still names a pack that has not been (re)installed yet), returns {error: "unknown_schema_pack", pack_name} as a normal structured result instead of an internal_error — trusted_host callers redact internal_error messages, which would otherwise make this specific, actionable case indistinguishable from any other failure.',
   params: {},
   scope: 'read',
   handler: async (ctx) => {
     const { loadActivePack, resolveActivePackNameOnly } = await import('./schema-pack/load-active.ts');
+    const { UnknownPackError } = await import('./schema-pack/registry.ts');
     const { loadConfig } = await import('./config.ts');
     const cfg = loadConfig();
     const sourceOpts: Record<string, unknown> = {};
     if (ctx.sourceId) sourceOpts.sourceId = ctx.sourceId;
     const resolution = resolveActivePackNameOnly({ cfg, remote: ctx.remote ?? true, ...sourceOpts });
-    const pack = await loadActivePack({ cfg, remote: ctx.remote ?? true, ...sourceOpts });
+    let pack;
+    try {
+      pack = await loadActivePack({ cfg, remote: ctx.remote ?? true, ...sourceOpts });
+    } catch (e) {
+      if (e instanceof UnknownPackError) {
+        return { error: 'unknown_schema_pack', pack_name: resolution.pack_name };
+      }
+      throw e;
+    }
     const primitiveSummary: Record<string, number> = {};
     for (const t of pack.manifest.page_types) {
       primitiveSummary[t.primitive] = (primitiveSummary[t.primitive] ?? 0) + 1;
@@ -4873,6 +4882,146 @@ const reload_schema_pack: Operation = {
   handler: async (_ctx, p) => {
     const { invalidatePackCache } = await import('./schema-pack/registry.ts');
     return invalidatePackCache(p.pack as string | undefined);
+  },
+};
+
+// INT-438: Monodrive control-plane pack install over trusted-host HTTP.
+// Replaces the old CLI/filesystem transport (`cat > pack.json && gbrain
+// schema validate/use/reload`) with ONE atomic MCP op. Admin scope +
+// NOT localOnly, same posture as schema_apply_mutations / reload_schema_pack
+// — the trust boundary is the OAuth admin scope (remote) or the OS
+// (ctx.remote===false), same as every other admin op in this file.
+//
+// Deliberately does NOT go through schema_apply_mutations (that's for
+// typed incremental edits to an existing pack, audited per-mutation).
+// This is a bulk REPLACE of the whole manifest — Monodrive compiles the
+// full pack from its own schema version and ships the bytes wholesale.
+//
+// Sequence: validate request shape → parse+validate manifest (same
+// parser as `schema validate` / `schema_lint`) → file-plane lint (same
+// as `schema_lint`) → temp-write + atomic rename under a per-pack lock
+// (same primitive schema_apply_mutations uses) → brain-wide activate
+// (tier-6 ~/.gbrain/config.json write, same as `schema use`) → reload
+// (same as reload_schema_pack) → re-resolve via the SAME loadActivePack
+// path get_active_schema_pack uses, so the returned {name, version,
+// sha8, source_tier} is the confirmed POST-reload state, not an echo of
+// the uploaded bytes. sha8 is computeManifestSha8 over the canonical
+// (sorted-key) JSON — the identical function get_active_schema_pack
+// calls, so install and observe always agree.
+const install_schema_pack: Operation = {
+  name: 'install_schema_pack',
+  description: 'Monodrive control-plane pack install (trusted-host HTTP). Body limited to 10 MiB. `name` must equal `pack.name` inside the body (copy/paste guard). Atomic temp-write + rename, file-plane validate + lint, brain-wide activate, reload, then re-resolve to confirm. Admin scope; NOT localOnly. Returns {name, version, sha8, source_tier} from the confirmed post-reload state.',
+  params: {
+    name: { type: 'string', required: true, description: 'Target pack name; must equal pack.name in the body' },
+    pack: { type: 'object', required: true, description: 'Full schema pack manifest JSON (gbrain-schema-pack-v1 shape)' },
+  },
+  scope: 'admin',
+  mutating: true,
+  handler: async (ctx, p) => {
+    const MAX_PACK_BYTES = 10 * 1024 * 1024;
+    const name = p.name;
+    const rawPack = p.pack;
+    if (typeof name !== 'string' || name.length === 0) {
+      return { error: 'invalid_request', message: 'name must be a non-empty string' };
+    }
+    if (typeof rawPack !== 'object' || rawPack === null || Array.isArray(rawPack)) {
+      return { error: 'invalid_request', message: 'pack must be a JSON object' };
+    }
+    const serialized = JSON.stringify(rawPack);
+    if (Buffer.byteLength(serialized, 'utf-8') > MAX_PACK_BYTES) {
+      return { error: 'pack_too_large', max_bytes: MAX_PACK_BYTES };
+    }
+    const bodyName = (rawPack as Record<string, unknown>).name;
+    if (bodyName !== name) {
+      return { error: 'pack_name_mismatch', expected: name, actual: bodyName ?? null };
+    }
+
+    const { parseSchemaPackManifest, SchemaPackManifestError } = await import('./schema-pack/manifest-v1.ts');
+    let manifest;
+    try {
+      manifest = parseSchemaPackManifest(rawPack);
+    } catch (e) {
+      if (e instanceof SchemaPackManifestError) {
+        return { error: 'validation_failed', code: e.code, message: e.message };
+      }
+      throw e;
+    }
+
+    const { runAllLintRules } = await import('./schema-pack/lint-rules.ts');
+    const lintReport = await runAllLintRules(manifest) as { ok: boolean; errors: unknown[]; warnings: unknown[] };
+    if (!lintReport.ok) {
+      return { error: 'lint_failed', errors: lintReport.errors, warnings: lintReport.warnings };
+    }
+
+    const { withPackLock, PackLockBusyError } = await import('./schema-pack/pack-lock.ts');
+    const { mkdirSync, existsSync, renameSync, rmSync, writeFileSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { gbrainPath, loadConfig, configPath } = await import('./config.ts');
+
+    try {
+      await withPackLock(name, {}, () => {
+        const packDir = gbrainPath('schema-packs', name);
+        mkdirSync(packDir, { recursive: true });
+        const finalPath = join(packDir, 'pack.json');
+        const tmpPath = join(packDir, `.pack.json.tmp-${process.pid}-${Date.now()}`);
+        try {
+          writeFileSync(tmpPath, JSON.stringify(manifest, null, 2), 'utf-8');
+          renameSync(tmpPath, finalPath);
+        } catch (e) {
+          try { if (existsSync(tmpPath)) rmSync(tmpPath, { force: true }); } catch { /* best effort cleanup */ }
+          throw e;
+        }
+      });
+    } catch (e) {
+      if (e instanceof PackLockBusyError) {
+        return { error: 'lock_busy', message: e.message, held_by: e.heldBy };
+      }
+      return { error: 'write_failed', message: (e as Error).message };
+    }
+
+    // Brain-wide activate — same tier-6 write `gbrain schema use <name>` makes.
+    try {
+      const cfg = loadConfig() ?? { engine: 'pglite' as const };
+      const updated = { ...cfg, schema_pack: name };
+      const cfgPath = configPath();
+      mkdirSync(dirname(cfgPath), { recursive: true });
+      writeFileSync(cfgPath, JSON.stringify(updated, null, 2) + '\n', 'utf-8');
+    } catch (e) {
+      return { error: 'activation_failed', message: (e as Error).message };
+    }
+
+    // Reload — same cache flush reload_schema_pack performs.
+    const { invalidatePackCache } = await import('./schema-pack/registry.ts');
+    invalidatePackCache(name);
+
+    // Confirm — re-resolve from disk post-reload via the SAME boundary
+    // helper get_active_schema_pack uses, so the response reflects what
+    // the runtime actually activated rather than what we intended to write.
+    const { loadActivePack, resolveActivePackNameOnly } = await import('./schema-pack/load-active.ts');
+    const freshCfg = loadConfig();
+    const sourceOpts: Record<string, unknown> = {};
+    if (ctx.sourceId) sourceOpts.sourceId = ctx.sourceId;
+    let resolution;
+    let resolved;
+    try {
+      resolution = resolveActivePackNameOnly({ cfg: freshCfg, remote: ctx.remote ?? true, ...sourceOpts });
+      resolved = await loadActivePack({ cfg: freshCfg, remote: ctx.remote ?? true, ...sourceOpts });
+    } catch (e) {
+      return { error: 'activation_unconfirmed', message: (e as Error).message };
+    }
+    if (resolved.manifest.name !== name) {
+      return {
+        error: 'activation_unconfirmed',
+        message: `pack installed but the resolved active pack is '${resolved.manifest.name}', not '${name}'`,
+        resolved_name: resolved.manifest.name,
+      };
+    }
+    return {
+      name: resolved.manifest.name,
+      version: resolved.manifest.version,
+      sha8: resolved.manifest_sha8,
+      source_tier: resolution.source,
+    };
   },
 };
 
@@ -5451,6 +5600,9 @@ export const operations: Operation[] = [
   schema_stats, schema_lint, schema_graph, schema_explain_type,
   schema_review_orphans,
   schema_apply_mutations, reload_schema_pack,
+  // INT-438: Monodrive trusted-host pack install (bulk replace, not a
+  // schema_apply_mutations batch — see comment on the op definition above).
+  install_schema_pack,
   // v0.41.18.0 (T16, A7, codex #5)
   run_onboard,
   // v0.41.20.0 SkillOpt — admin-scoped MCP op for remote optimization.
