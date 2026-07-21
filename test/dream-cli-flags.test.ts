@@ -34,7 +34,7 @@ describe('dream CLI flag wiring', () => {
   });
 
   test('--input implies --phase synthesize', () => {
-    expect(dreamSrc).toContain("phase = 'synthesize'");
+    expect(dreamSrc).toContain("phases = ['synthesize']");
   });
 
   test('--from > --to range validation', () => {
@@ -115,8 +115,13 @@ describe('dream CLI flag wiring', () => {
     });
 
     test('--drain defaults to extract_atoms and rejects other phases', () => {
-      expect(dreamSrc).toContain("phase = 'extract_atoms'");
+      expect(dreamSrc).toContain("phases = ['extract_atoms']");
       expect(dreamSrc).toContain('--drain currently supports only --phase extract_atoms');
+    });
+
+    test('documents repeatable --phase selection', () => {
+      expect(dreamSrc).toContain('Selected phases run in canonical cycle order');
+      expect(dreamSrc).toContain('--phase lint --phase sync --phase extract --json');
     });
 
     test('drain routes through the shared helper with the resolved source (5A)', () => {

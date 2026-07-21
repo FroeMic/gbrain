@@ -149,6 +149,87 @@ describe('runDream — --phase <name> restricts the cycle', () => {
     spy.mockRestore();
     errSpy.mockRestore();
   });
+
+  test('repeated --phase selects the unique set in canonical ALL_PHASES order', async () => {
+    const report = await runDream(engine, [
+      '--dir', repo,
+      '--phase', 'orphans',
+      '--phase', 'lint',
+      '--phase', 'lint',
+      '--json',
+    ]);
+    expect(report).toBeTruthy();
+    if (report) {
+      expect(report.phases.map((phase) => phase.phase)).toEqual(['lint', 'orphans']);
+    }
+  });
+
+  test('--phase with missing value exits 2 before phase work', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation(() => { throw new Error('EXIT'); });
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runDream(null, ['--phase']);
+    } catch (e: any) {
+      expect(e.message).toBe('EXIT');
+    }
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(errSpy.mock.calls.some((call) => String(call[0]).includes('missing value'))).toBe(true);
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  test('--phase --json treats the following flag as a missing phase value', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation(() => { throw new Error('EXIT'); });
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runDream(null, ['--phase', '--json']);
+    } catch (e: any) {
+      expect(e.message).toBe('EXIT');
+    }
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  test('--input with explicit non-synthesize phase selection exits 2', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation(() => { throw new Error('EXIT'); });
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runDream(null, ['--input', 'fixture.txt', '--phase', 'lint']);
+    } catch (e: any) {
+      expect(e.message).toBe('EXIT');
+    }
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(errSpy.mock.calls.some((call) => String(call[0]).includes('require --phase synthesize'))).toBe(true);
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  test('--drain rejects an additional distinct phase', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation(() => { throw new Error('EXIT'); });
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runDream(null, ['--drain', '--phase', 'extract_atoms', '--phase', 'embed']);
+    } catch (e: any) {
+      expect(e.message).toBe('EXIT');
+    }
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  test('--drain accepts duplicated extract_atoms phase selection', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation(() => { throw new Error('EXIT'); });
+    // Drain still needs an engine; prove validation accepts the argv shape by
+    // reaching the engine-null drain guard rather than the multi-phase usage error.
+    try {
+      await runDream(null, ['--drain', '--phase', 'extract_atoms', '--phase', 'extract_atoms']);
+    } catch (e: any) {
+      expect(e.message).toBe('EXIT');
+    }
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    exitSpy.mockRestore();
+  });
 });
 
 // ─── Output format ─────────────────────────────────────────────────
