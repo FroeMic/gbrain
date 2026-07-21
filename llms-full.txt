@@ -3683,6 +3683,20 @@ ChatGPT MCP connector). Pass `--public-url` whenever the server is reachable
 at anything other than `http://localhost:<port>` so the OAuth issuer in
 discovery metadata matches what clients hit (RFC 8414 §3.3).
 
+Managed hosts can start the authenticated endpoint with local-owner behavior:
+
+```bash
+gbrain serve --http --execution-mode trusted_host --source company
+```
+
+`trusted_host` is a process startup decision. OAuth authentication, audit
+attribution, rate limits, and redacted request logging stay active. An HTTP
+header, token claim, or MCP argument cannot change the mode. All authenticated
+callers can read and write the selected brain as its local owner, including
+private facts, all Takes holders, protected jobs, and local-only operations.
+Use this mode only behind a control plane that treats brain access as full
+owner access. The default `remote` mode keeps OAuth scope and visibility rules.
+
 Supported clients:
 - **ChatGPT** — requires OAuth 2.1 + PKCE. Works natively with `--http`.
 - **Claude Desktop / Cowork** — OAuth 2.1 or legacy bearer tokens.

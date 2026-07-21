@@ -17,15 +17,14 @@ function topChangelogVersion(): string {
 describe('release contract', () => {
   test('upstream release metadata agrees', () => {
     const version = read('VERSION').trim();
-    const packageVersion = JSON.parse(read('package.json')).version;
+    const packageMetadata = JSON.parse(read('package.json')) as { name: string; version: string };
     const lock = Bun.JSONC.parse(read('bun.lock')) as {
-      workspaces: { '': { version?: string } };
+      workspaces: { '': { name?: string } };
     };
-    const lockVersion = lock.workspaces[''].version;
 
     expect(version).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
-    expect(packageVersion).toBe(version);
-    expect(lockVersion).toBe(version);
+    expect(packageMetadata.version).toBe(version);
+    expect(lock.workspaces[''].name).toBe(packageMetadata.name);
     expect(topChangelogVersion()).toBe(version);
   });
 
