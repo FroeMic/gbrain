@@ -139,6 +139,14 @@ describe('get_active_schema_pack', () => {
       expect(typeof result.primitive_summary).toBe('object');
     });
   });
+
+  it('returns a structured unknown_schema_pack error (not an internal_error) when the configured pack is missing on disk (INT-438)', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir, GBRAIN_SCHEMA_PACK: 'monodrive-brain-does-not-exist' }, async () => {
+      const result = await operationsByName.get_active_schema_pack!.handler(ctxOf(), {}) as Record<string, unknown>;
+      expect(result.error).toBe('unknown_schema_pack');
+      expect(result.pack_name).toBe('monodrive-brain-does-not-exist');
+    });
+  });
 });
 
 // ── list_schema_packs ──────────────────────────────────────────────────
@@ -352,5 +360,114 @@ describe('reload_schema_pack', () => {
   it('invalidates a specific pack by name', async () => {
     const result = await operationsByName.reload_schema_pack!.handler(ctxOf(), { pack: 'foo' }) as { invalidated: string[] };
     expect(result.invalidated).toContain('foo');
+  });
+});
+
+// ── install_schema_pack (INT-438) ──────────────────────────────────────
+
+function validPackBody(name: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    api_version: 'gbrain-schema-pack-v1',
+    name,
+    version: '1.0.0',
+    description: 'test pack',
+    gbrain_min_version: '0.38.0',
+    extends: null,
+    borrow_from: [],
+    page_types: [
+      {
+        name: 'person',
+        primitive: 'entity',
+        path_prefixes: ['people/'],
+        aliases: [],
+        extractable: false,
+        expert_routing: false,
+      },
+    ],
+    link_types: [],
+    frontmatter_links: [],
+    takes_kinds: ['fact', 'take', 'bet', 'hunch'],
+    enrichable_types: [],
+    filing_rules: [],
+    ...overrides,
+  };
+}
+
+describe('install_schema_pack', () => {
+  it('is admin scope, NOT localOnly, mutating', () => {
+    const op = operationsByName.install_schema_pack!;
+    expect(op.scope).toBe('admin');
+    expect(op.localOnly).toBeUndefined();
+    expect(op.mutating).toBe(true);
+  });
+
+  it('rejects a name/pack.name mismatch without touching the runtime', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir }, async () => {
+      const result = await operationsByName.install_schema_pack!.handler(ctxOf(), {
+        name: 'monodrive-brain-brn_1',
+        pack: validPackBody('monodrive-brain-brn_other'),
+      }) as Record<string, unknown>;
+      expect(result.error).toBe('pack_name_mismatch');
+    });
+  });
+
+  it('rejects an invalid manifest shape', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir }, async () => {
+      const result = await operationsByName.install_schema_pack!.handler(ctxOf(), {
+        name: 'monodrive-brain-brn_1',
+        pack: validPackBody('monodrive-brain-brn_1', { api_version: 'wrong' }),
+      }) as Record<string, unknown>;
+      expect(result.error).toBe('validation_failed');
+    });
+  });
+
+  it('rejects a body over the 10 MiB limit', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir }, async () => {
+      const bloated = validPackBody('monodrive-brain-brn_1', {
+        description: 'x'.repeat(11 * 1024 * 1024),
+      });
+      const result = await operationsByName.install_schema_pack!.handler(ctxOf(), {
+        name: 'monodrive-brain-brn_1',
+        pack: bloated,
+      }) as Record<string, unknown>;
+      expect(result.error).toBe('pack_too_large');
+    });
+  });
+
+  it('installs, activates, reloads, and confirms — matching get_active_schema_pack afterward', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir, GBRAIN_SCHEMA_PACK: undefined }, async () => {
+      const name = 'monodrive-brain-brn_install_test';
+      const result = await operationsByName.install_schema_pack!.handler(ctxOf(), {
+        name,
+        pack: validPackBody(name),
+      }) as Record<string, unknown>;
+      expect(result.name).toBe(name);
+      expect(result.version).toBe('1.0.0');
+      expect(typeof result.sha8).toBe('string');
+      expect(typeof result.source_tier).toBe('string');
+
+      const active = await operationsByName.get_active_schema_pack!.handler(ctxOf(), {}) as Record<string, unknown>;
+      expect(active.pack_name).toBe(name);
+      expect(active.sha8).toBe(result.sha8);
+    });
+  });
+
+  it('a second install with a new version supersedes the first (same name, same lock)', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir, GBRAIN_SCHEMA_PACK: undefined }, async () => {
+      const name = 'monodrive-brain-brn_upgrade_test';
+      const first = await operationsByName.install_schema_pack!.handler(ctxOf(), {
+        name,
+        pack: validPackBody(name),
+      }) as Record<string, unknown>;
+      const second = await operationsByName.install_schema_pack!.handler(ctxOf(), {
+        name,
+        pack: validPackBody(name, { version: '2.0.0' }),
+      }) as Record<string, unknown>;
+      expect(second.version).toBe('2.0.0');
+      expect(second.sha8).not.toBe(first.sha8);
+
+      const active = await operationsByName.get_active_schema_pack!.handler(ctxOf(), {}) as Record<string, unknown>;
+      expect(active.version).toBe('2.0.0');
+    });
   });
 });

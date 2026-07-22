@@ -14,6 +14,8 @@
  *   gbrain dream --dry-run             # preview, no writes
  *   gbrain dream --json                # CycleReport JSON (for agents)
  *   gbrain dream --phase lint          # run a single phase
+ *   gbrain dream --phase lint --phase sync --phase extract
+ *                                      # explicit multi-phase selection
  *   gbrain dream --pull                # also git pull the brain repo
  *   gbrain dream --dir /path/to/brain  # explicit brain location
  *
@@ -39,7 +41,8 @@ interface DreamArgs {
   json: boolean;
   dryRun: boolean;
   pull: boolean;
-  phase: CyclePhase | null;
+  /** Explicit `--phase` selection in canonical ALL_PHASES order, or null for the default full cycle. */
+  phases: CyclePhase[] | null;
   dir: string | null;
   help: boolean;
   /** v0.21: ad-hoc transcript file path; implies --phase synthesize. */
@@ -97,22 +100,38 @@ function collectFlagValues(args: string[], flag: string): string[] | null {
   for (let i = 0; i < args.length; i++) {
     if (args[i] !== flag) continue;
     const v = args[i + 1];
-    if (v === undefined) return null; // flag at end of argv
+    // Missing value: end of argv, or the next token is another flag.
+    if (v === undefined || v.startsWith('--')) return null;
     values.push(v);
   }
   return values;
 }
 
-function parseArgs(args: string[]): DreamArgs {
-  const phaseIdx = args.indexOf('--phase');
-  const rawPhase = phaseIdx !== -1 ? args[phaseIdx + 1] : null;
-  let phase = rawPhase && (ALL_PHASES as string[]).includes(rawPhase)
-    ? (rawPhase as CyclePhase)
-    : null;
-  if (rawPhase && !phase) {
-    console.error(`Unknown phase "${rawPhase}". Valid: ${ALL_PHASES.join(', ')}`);
-    process.exit(1);
+function parsePhaseSelection(args: string[]): CyclePhase[] | null {
+  const rawPhases = collectFlagValues(args, '--phase');
+  if (rawPhases === null) {
+    console.error(
+      `--phase <name>: missing value. Valid phases: ${ALL_PHASES.join(', ')}`,
+    );
+    process.exit(2);
   }
+  if (rawPhases.length === 0) return null;
+
+  const unique = new Set<CyclePhase>();
+  for (const rawPhase of rawPhases) {
+    if (!(ALL_PHASES as string[]).includes(rawPhase)) {
+      console.error(`Unknown phase "${rawPhase}". Valid: ${ALL_PHASES.join(', ')}`);
+      process.exit(1);
+    }
+    unique.add(rawPhase as CyclePhase);
+  }
+  // Canonical ALL_PHASES order, not argv order.
+  return ALL_PHASES.filter((phase) => unique.has(phase));
+}
+
+function parseArgs(args: string[]): DreamArgs {
+  let phases = parsePhaseSelection(args);
+  const explicitPhaseSelection = phases !== null;
 
   const dirIdx = args.indexOf('--dir');
   const dir = dirIdx !== -1 ? args[dirIdx + 1] : null;
@@ -152,8 +171,17 @@ function parseArgs(args: string[]): DreamArgs {
     process.exit(2);
   }
 
-  // --input implies --phase synthesize.
-  if (inputFile && !phase) phase = 'synthesize';
+  // --input implies --phase synthesize when no explicit phase selection.
+  if (inputFile && !explicitPhaseSelection) phases = ['synthesize'];
+
+  const hasSynthSelector = Boolean(inputFile || date || from || to || args.includes('--unsafe-bypass-dream-guard'));
+  if (explicitPhaseSelection && hasSynthSelector && !phases!.includes('synthesize')) {
+    console.error(
+      'synthesis selectors (--input / --date / --from / --to / --unsafe-bypass-dream-guard) ' +
+      'require --phase synthesize when an explicit phase selection is present',
+    );
+    process.exit(2);
+  }
 
   // v0.41.13: --source <id> (and the --source-id alias) drives per-source
   // cycle scoping. Resolution rules:
@@ -195,6 +223,8 @@ function parseArgs(args: string[]): DreamArgs {
   // issue #1678: --drain [--window <seconds>]. Only extract_atoms is drainable
   // this wave (it has a real eligibility predicate; synthesize_concepts does
   // not — Codex #12). --drain with no --phase defaults to extract_atoms.
+  // With explicit phases, the deduplicated selection must be exactly
+  // [extract_atoms].
   const drain = args.includes('--drain');
   const windowIdx = args.indexOf('--window');
   let windowSeconds = DEFAULT_DRAIN_WINDOW_SECONDS;
@@ -207,9 +237,13 @@ function parseArgs(args: string[]): DreamArgs {
     windowSeconds = parseInt(raw, 10);
   }
   if (drain) {
-    if (!phase) phase = 'extract_atoms';
-    else if (phase !== 'extract_atoms') {
-      console.error(`--drain currently supports only --phase extract_atoms (got "${phase}")`);
+    if (!phases) {
+      phases = ['extract_atoms'];
+    } else if (phases.length !== 1 || phases[0] !== 'extract_atoms') {
+      console.error(
+        `--drain currently supports only --phase extract_atoms ` +
+        `(got [${phases.map((phase) => `"${phase}"`).join(', ')}])`,
+      );
       process.exit(2);
     }
   }
@@ -218,7 +252,7 @@ function parseArgs(args: string[]): DreamArgs {
     json: args.includes('--json'),
     dryRun: args.includes('--dry-run'),
     pull: args.includes('--pull'),
-    phase,
+    phases,
     dir,
     help: args.includes('--help') || args.includes('-h'),
     inputFile,
@@ -309,7 +343,8 @@ Options:
                       verdicts), but skips the Sonnet synthesis pass.
                       "--dry-run" does NOT mean "zero LLM calls."
   --json              Emit the CycleReport as JSON (agent-readable)
-  --phase <name>      Run a single phase: ${ALL_PHASES.join(' | ')}
+  --phase <name>      Run one or more phases (repeatable). Valid: ${ALL_PHASES.join(' | ')}.
+                      Selected phases run in canonical cycle order.
   --pull              git pull the brain repo before syncing (default: no pull)
   --dir <path>        Brain directory (default: configured brain). On a
                       postgres/remote brain with no local checkout, the
@@ -353,6 +388,7 @@ Examples:
   gbrain dream
   gbrain dream --dry-run --json
   gbrain dream --phase lint
+  gbrain dream --phase lint --phase sync --phase extract --json
   gbrain dream --phase synthesize --input ~/transcripts/2026-04-25.txt
   gbrain dream --phase synthesize --from 2026-04-01 --to 2026-04-25
   0 2 * * * gbrain dream --json         # nightly via cron
@@ -581,7 +617,7 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
     return runDrain(engine, opts, resolvedSourceId, brainDir);
   }
 
-  const phases: CyclePhase[] | undefined = opts.phase ? [opts.phase] : undefined;
+  const phases: CyclePhase[] | undefined = opts.phases ?? undefined;
 
   const report = await runCycle(engine, {
     brainDir,
